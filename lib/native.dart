@@ -82,4 +82,9 @@ class Native {
   /// known screen exists, so the UI can say so rather than promise nothing.
   static Future<bool> openAutostartSettings() async =>
       await _channel.invokeMethod<bool>('openAutostartSettings') ?? false;
+
+  /// Whether this phone has a vendor autostart screen at all. False on stock
+  /// Android, Samsung and Pixel, where the prompt would be noise.
+  static Future<bool> hasAutostartSettings() async =>
+      await _channel.invokeMethod<bool>('hasAutostartSettings') ?? false;
 }

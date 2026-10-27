@@ -8,6 +8,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../native.dart';
 import '../server/auth.dart';
 import '../server/store.dart';
 import '../service/drive_task.dart';
@@ -54,6 +55,10 @@ class DriveController extends ChangeNotifier {
   /// MIUI exposes no way to read that setting, so acknowledgement is the only
   /// signal available.
   bool autostartAcknowledged = false;
+
+  /// Whether this phone has a vendor autostart screen. Samsung, Pixel and
+  /// stock Android do not, and the prompt is meaningless there.
+  bool hasAutostartScreen = false;
   bool get isLive => tunnelState == TunnelState.live;
   bool get isBusy =>
       tunnelState == TunnelState.starting ||
@@ -78,6 +83,7 @@ class DriveController extends ChangeNotifier {
 
     autostartAcknowledged =
         await _settings.read(key: _kAutostartDone) == 'yes';
+    hasAutostartScreen = await Native.hasAutostartSettings();
 
     claim = await provisioner.saved();
 

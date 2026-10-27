@@ -51,6 +51,11 @@ class MainActivity : FlutterActivity() {
                         result.success(openAutostartSettings())
                     }
 
+                    // Only Xiaomi/Oppo/Vivo/Huawei-style ROMs have this screen.
+                    // Asking first keeps the prompt off phones it cannot help.
+                    "hasAutostartSettings" ->
+                        result.success(autostartIntent() != null)
+
                     else -> result.notImplemented()
                 }
             }
@@ -137,7 +142,7 @@ class MainActivity : FlutterActivity() {
     }
 
     /** Known vendor autostart screens, tried in order. */
-    private fun openAutostartSettings(): Boolean {
+    private fun autostartIntent(): Intent? {
         val candidates = listOf(
             "com.miui.securitycenter" to
                 "com.miui.permcenter.autostart.AutoStartManagementActivity",
@@ -156,14 +161,21 @@ class MainActivity : FlutterActivity() {
         for ((pkg, cls) in candidates) {
             try {
                 val intent = Intent().setClassName(pkg, cls)
-                if (packageManager.resolveActivity(intent, 0) != null) {
-                    startActivity(intent)
-                    return true
-                }
+                if (packageManager.resolveActivity(intent, 0) != null) return intent
             } catch (_: Exception) {
                 continue
             }
         }
-        return false
+        return null
+    }
+
+    private fun openAutostartSettings(): Boolean {
+        val intent = autostartIntent() ?: return false
+        return try {
+            startActivity(intent)
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 }

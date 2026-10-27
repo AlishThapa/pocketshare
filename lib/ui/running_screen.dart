@@ -116,13 +116,16 @@ class _RunningScreenState extends State<RunningScreen> with WidgetsBindingObserv
                 },
               ),
 
-            if (!c.autostartAcknowledged)
+            // Gated on the phone actually having the screen: on a Samsung or
+            // Pixel this named four other vendors and the button could only
+            // report that no such screen exists.
+            if (c.hasAutostartScreen && !c.autostartAcknowledged)
               _TaskTile(
                 icon: Icons.restart_alt,
                 title: 'Allow autostart',
-                body: 'Xiaomi, Oppo, Vivo and Huawei phones block apps from '
-                    'restarting themselves. Android gives no way to check this '
-                    'setting, so tell me once you have turned it on.',
+                body: 'This phone blocks apps from restarting themselves. '
+                    'Android gives no way to check the setting, so tell me '
+                    'once you have turned it on.',
                 action: 'Open autostart',
                 onPressed: () async {
                   final opened = await Native.openAutostartSettings();
