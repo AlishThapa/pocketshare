@@ -30,9 +30,16 @@ class CloudflareError implements Exception {
 }
 
 class CfZone {
-  const CfZone({required this.id, required this.name});
+  const CfZone({required this.id, required this.name, required this.accountId});
   final String id;
   final String name;
+
+  /// The account that owns this zone. Taken from the zone itself because
+  /// listing accounts needs a permission of its own: a token scoped to
+  /// Cloudflare Tunnel can create tunnels in an account without being
+  /// allowed to enumerate accounts, so GET /accounts comes back empty for a
+  /// perfectly good token. Empty only if Cloudflare omits the field.
+  final String accountId;
 }
 
 class CfAccount {
@@ -157,7 +164,12 @@ class CloudflareApi {
     return [
       for (final r in rows)
         if (r['id'] is String && r['name'] is String)
-          CfZone(id: r['id'] as String, name: r['name'] as String),
+          CfZone(
+            id: r['id'] as String,
+            name: r['name'] as String,
+            accountId:
+                (r['account'] as Map<String, Object?>?)?['id'] as String? ?? '',
+          ),
     ];
   }
 

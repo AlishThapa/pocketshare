@@ -29,7 +29,9 @@ class FakeCloudflare {
   final Map<String, Map<String, Object?>> tunnels = {};
   final List<Map<String, Object?>> dns = [];
 
-  /// path fragment -> (status, errorCode, message)
+  /// path fragment -> (status, errorCode, message). A fragment wrapped in
+  /// `=` matches the whole path, so failing `/accounts` does not also fail
+  /// `/accounts/<id>/cfd_tunnel`.
   final Map<String, (int, int, String)> failures = {};
 
   String get base => 'http://127.0.0.1:${_server.port}';
@@ -61,7 +63,11 @@ class FakeCloudflare {
     }
 
     for (final entry in failures.entries) {
-      if (path.contains(entry.key)) {
+      final key = entry.key;
+      final hit = key.startsWith('=')
+          ? path.endsWith(key.substring(1))
+          : path.contains(key);
+      if (hit) {
         final (status, code, message) = entry.value;
         return _send(req, status, {
           'success': false,
@@ -84,8 +90,16 @@ class FakeCloudflare {
     if (path.endsWith('/zones') && method == 'GET') {
       final wanted = req.uri.queryParameters['name'];
       final all = [
-        {'id': 'zone-1', 'name': 'thapaalish.com.np'},
-        {'id': 'zone-2', 'name': 'example.com'},
+        {
+          'id': 'zone-1',
+          'name': 'thapaalish.com.np',
+          'account': {'id': 'acct-1', 'name': 'Alish'},
+        },
+        {
+          'id': 'zone-2',
+          'name': 'example.com',
+          'account': {'id': 'acct-1', 'name': 'Alish'},
+        },
       ];
       return _ok(req,
           wanted == null ? all : all.where((z) => z['name'] == wanted).toList());
@@ -211,8 +225,34 @@ Future<void> main() async {
   check('zone carries id and name',
       zones.first.id == 'zone-1' && zones.first.name == 'thapaalish.com.np');
 
+  check('zone carries its owning account',
+      zones.first.accountId == 'acct-1', zones.first.accountId);
+
+  // A token scoped to Cloudflare Tunnel + DNS can create tunnels and write
+  // records, but listing accounts is a separate permission it does not have.
+  // Treating that refusal as a missing scope rejected correct tokens.
+  print('\n-- a token that cannot list accounts --');
+  fake.failOn('=/accounts', status: 403, code: 9109, message: 'insufficient permissions');
+  final zonesStillWork = await api().zones();
+  check('zones still listed', zonesStillWork.length == 2);
+  check('account id came from the zone, not /accounts',
+      zonesStillWork.first.accountId == 'acct-1');
+  final hostNoAccounts = HostProvisioner(
+    api: api(),
+    accountId: zonesStillWork.first.accountId,
+    zoneId: zonesStillWork.first.id,
+    zone: zonesStillWork.first.name,
+  );
+  final madeWithoutAccounts = await hostNoAccounts.provision('noaccountslist');
+  check('provisioning works without listing accounts',
+      madeWithoutAccounts.hostname == 'noaccountslist.thapaalish.com.np',
+      madeWithoutAccounts.hostname);
+  check('never called /accounts during provisioning',
+      !fake.calls.any((c) => c.endsWith('GET /accounts')));
+  fake.failures.clear();
+
   final accounts = await api().accounts();
-  check('lists accounts', accounts.single.id == 'acct-1');
+  check('lists accounts when the token may', accounts.single.id == 'acct-1');
 
   fake.failOn('/zones', status: 403, code: 9109, message: 'insufficient permissions');
   try {
@@ -226,6 +266,9 @@ Future<void> main() async {
   fake.failures.clear();
 
   print('\n-- provisioning --');
+  // Fresh slate: the checks below count tunnels and records absolutely.
+  fake.tunnels.clear();
+  fake.dns.clear();
   final host = HostProvisioner(
     api: api(),
     accountId: 'acct-1',

@@ -285,17 +285,12 @@ class DriveController extends ChangeNotifier {
         notifyListeners();
         return false;
       }
-      final accounts = await api.accounts();
-      if (accounts.isEmpty) {
-        errorMessage = 'This token cannot see your account. Give it '
-            'Account / Cloudflare Tunnel / Edit.';
-        notifyListeners();
-        return false;
-      }
-
+      // Deliberately no /accounts call here. Listing accounts is its own
+      // permission, so a token with exactly the scopes this needs is refused
+      // by it — which looked like a missing permission when it was not one.
+      // Each zone already names its owning account.
       cfZones = zones;
       cfZone = zones.length == 1 ? zones.first : null;
-      cfAccountId = accounts.first.id;
       _pendingToken = token;
       notifyListeners();
       return true;
@@ -315,6 +310,21 @@ class DriveController extends ChangeNotifier {
     }
   }
 
+  /// Only reached when a zone arrives without its account, which Cloudflare
+  /// does not normally do. Listing accounts needs its own permission, so this
+  /// is allowed to fail without turning into an error the user sees.
+  Future<String?> _accountIdFallback(String token) async {
+    final api = CloudflareApi(token: token);
+    try {
+      final accounts = await api.accounts();
+      return accounts.isEmpty ? null : accounts.first.id;
+    } on CloudflareError {
+      return null;
+    } finally {
+      api.close();
+    }
+  }
+
   void chooseZone(CfZone zone) {
     cfZone = zone;
     notifyListeners();
@@ -324,12 +334,22 @@ class DriveController extends ChangeNotifier {
   Future<bool> provisionAsHost(String rawName) async {
     final token = _pendingToken;
     final zone = cfZone;
-    final accountId = cfAccountId;
-    if (token == null || zone == null || accountId == null) {
+    if (token == null || zone == null) {
       errorMessage = 'Connect Cloudflare first.';
       notifyListeners();
       return false;
     }
+
+    final accountId = zone.accountId.isNotEmpty
+        ? zone.accountId
+        : await _accountIdFallback(token);
+    if (accountId == null) {
+      errorMessage = 'Could not work out which Cloudflare account owns '
+          '${zone.name}. Add Account / Cloudflare Tunnel / Edit to the token.';
+      notifyListeners();
+      return false;
+    }
+    cfAccountId = accountId;
 
     final problem = DriveName.problem(rawName);
     if (problem != null) {
