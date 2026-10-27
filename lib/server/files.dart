@@ -78,8 +78,11 @@ class DriveFiles {
 
     final dst = p.join(destDir.path, p.basename(src));
     if (p.equals(src, dst)) return;
-    // Moving a directory into itself would detach the subtree.
-    if (p.isWithin(src, destDir.path)) {
+    // Moving a directory into itself (or into its own descendant) would
+    // detach the subtree. `isWithin` is false for a path against itself, so
+    // the equality case has to be named separately or it reaches rename(2)
+    // and surfaces as a 500.
+    if (p.equals(src, destDir.path) || p.isWithin(src, destDir.path)) {
       throw DriveConflict('cannot move a folder into itself');
     }
     if (await _exists(dst)) throw DriveConflict('target already exists');

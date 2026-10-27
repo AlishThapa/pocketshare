@@ -54,3 +54,4 @@ worker/.wrangler/
 # Built artifacts
 *.apk
 *.aab
+.dev_drive/

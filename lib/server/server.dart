@@ -120,11 +120,17 @@ class DriveServer {
           if (_isMutation(request.method) && path.startsWith('/api/')) {
             final origin = request.headers['origin'];
             final host = request.headers['host'];
-            if (origin != null && host != null) {
-              final originHost = Uri.tryParse(origin)?.host;
-              if (originHost != null && originHost != host.split(':').first) {
-                return _json({'error': 'cross-origin request refused'}, 403);
-              }
+            // Absent Origin used to pass. Browsers always send it on a
+            // state-changing fetch, so the only callers it let through were
+            // ones not subject to the same-origin policy at all — which is
+            // the opposite of failing closed. A scripted client has to send
+            // an Origin header now.
+            if (origin == null || host == null) {
+              return _json({'error': 'missing Origin'}, 403);
+            }
+            final originHost = Uri.tryParse(origin)?.host;
+            if (originHost == null || originHost != host.split(':').first) {
+              return _json({'error': 'cross-origin request refused'}, 403);
             }
           }
 
@@ -343,9 +349,8 @@ class DriveServer {
         final length = await file.length();
         final type = lookupMimeType(file.path) ?? 'application/octet-stream';
         final inline = request.url.queryParameters['inline'] == '1';
-        final disposition = inline
-            ? 'inline'
-            : 'attachment; filename="${_escapeFilename(p.basename(file.path))}"';
+        final disposition =
+            inline ? 'inline' : _attachment(p.basename(file.path));
 
         final range = _parseRange(request.headers['range'], length);
         if (range == null) {
@@ -377,8 +382,40 @@ class DriveServer {
         );
       });
 
-  static String _escapeFilename(String name) =>
-      name.replaceAll('"', '').replaceAll(RegExp(r'[\r\n]'), '');
+  /// Content-Disposition for a download, per RFC 6266.
+  ///
+  /// HTTP header values are Latin-1, so a name with Devanagari, CJK or emoji
+  /// in it cannot go in the quoted `filename` at all — dart:io throws while
+  /// writing the headers and the response never completes, hanging the client.
+  /// The quoted form therefore carries an ASCII-only fallback, and the real
+  /// name travels in `filename*` as percent-encoded UTF-8.
+  static String _attachment(String name) {
+    final ascii = name
+        .replaceAll(RegExp(r'[^\x20-\x7E]'), '_')
+        .replaceAll('"', '')
+        .replaceAll('\\', '');
+    final fallback = ascii.trim().isEmpty ? 'download' : ascii;
+    return 'attachment; filename="$fallback"; '
+        "filename*=UTF-8''${_rfc5987(name)}";
+  }
+
+  /// Percent-encodes everything outside RFC 5987's `attr-char` set. Dart's
+  /// own encoders leave `!'()*` alone, which this grammar does not allow.
+  static String _rfc5987(String name) {
+    const safe = "!#\$&+-.^_`|~";
+    final out = StringBuffer();
+    for (final byte in utf8.encode(name)) {
+      final isAlphaNum = (byte >= 0x30 && byte <= 0x39) ||
+          (byte >= 0x41 && byte <= 0x5A) ||
+          (byte >= 0x61 && byte <= 0x7A);
+      if (isAlphaNum || safe.codeUnits.contains(byte)) {
+        out.writeCharCode(byte);
+      } else {
+        out.write('%${byte.toRadixString(16).toUpperCase().padLeft(2, '0')}');
+      }
+    }
+    return out.toString();
+  }
 
   static _ByteRange? _parseRange(String? header, int length) {
     if (header == null || !header.startsWith('bytes=')) return null;

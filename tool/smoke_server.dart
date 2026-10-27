@@ -53,6 +53,9 @@ Future<void> main() async {
   }) async {
     final r = await client.openUrl(method, Uri.parse('$base$path'));
     if (cookie != null) r.headers.set('cookie', cookie);
+    // Stand in for a browser: state-changing requests carry an Origin, and
+    // the server refuses them without one.
+    r.headers.set('origin', base);
     headers.forEach(r.headers.set);
     if (json != null) {
       r.headers.contentType = ContentType.json;
@@ -184,6 +187,66 @@ Future<void> main() async {
       cookie: cookie, headers: {'range': 'bytes=99999999-'});
   await _collect(r);
   check('unsatisfiable range 416', r.statusCode == 416, '${r.statusCode}');
+
+  // A non-ASCII filename used to be written straight into Content-Disposition.
+  // HTTP header values are Latin-1, so dart:io threw while writing the headers
+  // and the response never completed: the client hung forever rather than
+  // failing. These names are ordinary here, so the hang was reachable by just
+  // uploading a file named in Nepali.
+  print('\n-- non-ASCII filenames --');
+  for (final name in ['नेपाली फाइल.txt', '🎉 party.txt', 'café.txt']) {
+    File('${root.path}/$name').writeAsStringSync('hello');
+    final encoded = Uri.encodeQueryComponent(name);
+    r = await req('GET', '/api/download?path=$encoded', cookie: cookie)
+        .timeout(const Duration(seconds: 10), onTimeout: () => throw 'hung');
+    final got = await _collect(r);
+    check('download "$name" 200', r.statusCode == 200, '${r.statusCode}');
+    check('download "$name" body', got.length == 5, '${got.length}');
+    final cd = r.headers.value('content-disposition') ?? '';
+    check('"$name" carries filename*', cd.contains("filename*=UTF-8''"), cd);
+    check('"$name" ascii fallback is latin-1',
+        cd.runes.every((c) => c < 0x100), cd);
+  }
+
+  // Moving a folder into itself reached rename(2) and surfaced as a 500,
+  // because `isWithin` is false for a path against itself.
+  print('\n-- move guards --');
+  r = await req('POST', '/api/folders', json: {'path': 'SelfMove'}, cookie: cookie);
+  await body(r);
+  r = await req('POST', '/api/move',
+      json: {'from': 'SelfMove', 'toDir': 'SelfMove'}, cookie: cookie);
+  await body(r);
+  check('move folder into itself 409', r.statusCode == 409, '${r.statusCode}');
+  check('folder survived the attempt',
+      Directory('${root.path}/SelfMove').existsSync());
+
+  r = await req('POST', '/api/folders', json: {'path': 'SelfMove/Inner'}, cookie: cookie);
+  await body(r);
+  r = await req('POST', '/api/move',
+      json: {'from': 'SelfMove', 'toDir': 'SelfMove/Inner'}, cookie: cookie);
+  await body(r);
+  check('move folder into descendant 409', r.statusCode == 409, '${r.statusCode}');
+
+  // The Origin check used to run only when an Origin was present, so a client
+  // outside the same-origin policy passed while browsers were held to it.
+  print('\n-- origin --');
+  final noOrigin = await client.openUrl('POST', Uri.parse('$base/api/folders'));
+  noOrigin.headers.set('cookie', cookie);
+  noOrigin.headers.contentType = ContentType.json;
+  noOrigin.add(utf8.encode(jsonEncode({'path': 'NoOriginFolder'})));
+  final noOriginRes = await noOrigin.close();
+  await _collect(noOriginRes);
+  check('mutation without Origin 403', noOriginRes.statusCode == 403,
+      '${noOriginRes.statusCode}');
+  check('no folder created',
+      !Directory('${root.path}/NoOriginFolder').existsSync());
+
+  r = await req('POST', '/api/folders',
+      json: {'path': 'EvilFolder'},
+      cookie: cookie,
+      headers: {'origin': 'https://evil.example'});
+  await body(r);
+  check('mutation from foreign Origin 403', r.statusCode == 403, '${r.statusCode}');
 
   print('\n-- trash --');
   r = await req('POST', '/api/delete', json: {'path': 'Photos/big.bin'}, cookie: cookie);
