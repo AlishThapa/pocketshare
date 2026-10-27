@@ -68,7 +68,12 @@ class _ClaimScreenState extends State<ClaimScreen> {
         _invite.text.trim().isNotEmpty;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Set up PocketShare')),
+      appBar: AppBar(
+        title: const Text('I have an invite code'),
+        // Without this, Back quits the app from the first screen a user
+        // reaches, with no way back to the path choice.
+        leading: BackButton(onPressed: widget.controller.backToPathChoice),
+      ),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),

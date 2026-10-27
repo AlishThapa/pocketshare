@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 
 import 'state/drive_controller.dart';
 import 'ui/claim_screen.dart';
+import 'ui/connect_cloudflare_screen.dart';
 import 'ui/login_screen.dart';
 import 'ui/running_screen.dart';
+import 'ui/start_screen.dart';
 
 /// Worker base URL. The default is the deployed provisioning Worker; a fork
 /// points at its own with:
@@ -59,7 +61,10 @@ class _PocketShareAppState extends State<PocketShareApp> {
         animation: _controller,
         builder: (context, _) => switch (_controller.stage) {
           SetupStage.loading => const _Splash(),
+          SetupStage.choosePath => StartScreen(controller: _controller),
           SetupStage.claimName => ClaimScreen(controller: _controller),
+          SetupStage.connectCloudflare =>
+            ConnectCloudflareScreen(controller: _controller),
           SetupStage.createLogin => LoginSetupScreen(controller: _controller),
           SetupStage.ready => RunningScreen(controller: _controller),
         },

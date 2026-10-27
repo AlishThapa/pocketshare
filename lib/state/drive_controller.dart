@@ -8,7 +8,12 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../cloudflare/api.dart';
+import '../cloudflare/host_provisioner.dart';
+import '../cloudflare/names.dart';
 import '../native.dart';
+import '../storage/secrets.dart';
+import '../storage/token_format.dart';
 import '../server/auth.dart';
 import '../server/store.dart';
 import '../service/drive_task.dart';
@@ -16,7 +21,23 @@ import '../storage/drive_location.dart';
 import '../tunnel/cloudflared.dart';
 import '../tunnel/provision.dart';
 
-enum SetupStage { loading, claimName, createLogin, ready }
+enum SetupStage {
+  loading,
+
+  /// Screen one: invite code, or your own Cloudflare. Asking this first keeps
+  /// someone who was simply handed a code from ever seeing a word about
+  /// tokens or domains.
+  choosePath,
+
+  /// Guest path: invite code and name together.
+  claimName,
+
+  /// Host path: paste an API token, pick a domain, pick a name.
+  connectCloudflare,
+
+  createLogin,
+  ready,
+}
 
 /// Setup state machine, and a remote control for the drive.
 ///
@@ -88,7 +109,7 @@ class DriveController extends ChangeNotifier {
     claim = await provisioner.saved();
 
     if (claim == null) {
-      stage = SetupStage.claimName;
+      stage = SetupStage.choosePath;
     } else if (!_auth!.hasAccount) {
       stage = SetupStage.createLogin;
     } else {
@@ -203,6 +224,161 @@ class DriveController extends ChangeNotifier {
   // --- setup ---------------------------------------------------------------
 
   Future<NameCheck> checkName(String name) => provisioner.checkAvailable(name);
+
+  // --- screen one ----------------------------------------------------------
+
+  void choosePathInvite() {
+    errorMessage = null;
+    stage = SetupStage.claimName;
+    notifyListeners();
+  }
+
+  void choosePathCloudflare() {
+    errorMessage = null;
+    stage = SetupStage.connectCloudflare;
+    notifyListeners();
+  }
+
+  void backToPathChoice() {
+    errorMessage = null;
+    cfZones = const [];
+    _pendingToken = null;
+    stage = SetupStage.choosePath;
+    notifyListeners();
+  }
+
+  // --- host path -----------------------------------------------------------
+
+  /// Domains the pasted token can reach. Empty until a token is accepted.
+  List<CfZone> cfZones = const [];
+  CfZone? cfZone;
+  String? cfAccountId;
+
+  /// Held only between pasting the token and choosing a zone. It is written
+  /// to secure storage once there is a zone to store with it, and never kept
+  /// anywhere else.
+  String? _pendingToken;
+
+  /// Verifies the token and loads its zones. This doubles as the scope check:
+  /// a token created with no permissions ticked fails here, on the screen
+  /// where it was pasted, rather than once a name has been chosen.
+  Future<bool> connectCloudflare(String rawToken) async {
+    final token = rawToken.trim();
+    errorMessage = null;
+    notifyListeners();
+
+    if (TokenFormat.looksLikeTunnelToken(token)) {
+      errorMessage = 'That is a tunnel token. It can run a tunnel that already '
+          'exists, but it cannot create one or write DNS, so it cannot make an '
+          'address. Create an API token instead.';
+      notifyListeners();
+      return false;
+    }
+
+    final api = CloudflareApi(token: token);
+    try {
+      await api.verify();
+      final zones = await api.zones();
+      if (zones.isEmpty) {
+        errorMessage = 'This token cannot see any domain. Give it '
+            'Zone / DNS / Edit on the domain you want to use.';
+        notifyListeners();
+        return false;
+      }
+      final accounts = await api.accounts();
+      if (accounts.isEmpty) {
+        errorMessage = 'This token cannot see your account. Give it '
+            'Account / Cloudflare Tunnel / Edit.';
+        notifyListeners();
+        return false;
+      }
+
+      cfZones = zones;
+      cfZone = zones.length == 1 ? zones.first : null;
+      cfAccountId = accounts.first.id;
+      _pendingToken = token;
+      notifyListeners();
+      return true;
+    } on CloudflareError catch (e) {
+      errorMessage = switch (e) {
+        _ when e.isUnauthorized =>
+          'Cloudflare does not recognise that token. Check it was copied whole.',
+        _ when e.isForbidden =>
+          'That token is missing permissions. It needs Account / Cloudflare '
+              'Tunnel / Edit and Zone / DNS / Edit.',
+        _ => e.message,
+      };
+      notifyListeners();
+      return false;
+    } finally {
+      api.close();
+    }
+  }
+
+  void chooseZone(CfZone zone) {
+    cfZone = zone;
+    notifyListeners();
+  }
+
+  /// Creates the address on the chosen domain using this phone's own token.
+  Future<bool> provisionAsHost(String rawName) async {
+    final token = _pendingToken;
+    final zone = cfZone;
+    final accountId = cfAccountId;
+    if (token == null || zone == null || accountId == null) {
+      errorMessage = 'Connect Cloudflare first.';
+      notifyListeners();
+      return false;
+    }
+
+    final problem = DriveName.problem(rawName);
+    if (problem != null) {
+      errorMessage = problem;
+      notifyListeners();
+      return false;
+    }
+
+    errorMessage = null;
+    notifyListeners();
+
+    final api = CloudflareApi(token: token);
+    try {
+      final host = HostProvisioner(
+        api: api,
+        accountId: accountId,
+        zoneId: zone.id,
+        zone: zone.name,
+      );
+      final made = await host.provision(rawName);
+
+      // Store the credential only once something was successfully created
+      // with it, so a token that cannot actually provision is never kept.
+      await Secrets.saveCloudflare(
+        apiToken: token,
+        zone: zone.name,
+        zoneId: zone.id,
+        accountId: accountId,
+      );
+      claim = await provisioner.adopt(
+        hostname: made.hostname,
+        tunnelToken: made.tunnelToken,
+      );
+      _pendingToken = null;
+      stage = SetupStage.createLogin;
+      notifyListeners();
+      return true;
+    } on CloudflareError catch (e) {
+      errorMessage = e.isDuplicateTunnel
+          ? 'A tunnel named ${DriveName.tunnelName(rawName)} already exists on '
+              'your account. Delete it in the Cloudflare dashboard, or pick '
+              'another name.'
+          : e.message;
+      notifyListeners();
+      return false;
+    } finally {
+      api.close();
+    }
+  }
 
   Future<bool> claimName({required String name, required String inviteCode}) async {
     errorMessage = null;

@@ -96,6 +96,18 @@ class Provisioner {
     );
   }
 
+  /// Records a claim this device made itself, through its own Cloudflare
+  /// token, so the host path lands in the same storage the rest of the app
+  /// already reads.
+  Future<Claim> adopt({
+    required String hostname,
+    required String tunnelToken,
+  }) async {
+    await _storage.write(key: _kHostname, value: hostname);
+    await _storage.write(key: _kTunnelToken, value: tunnelToken);
+    return Claim(hostname: hostname, tunnelToken: tunnelToken, reused: false);
+  }
+
   Future<Claim?> saved() async {
     final hostname = await _storage.read(key: _kHostname);
     final token = await _storage.read(key: _kTunnelToken);
