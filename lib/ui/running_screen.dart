@@ -6,6 +6,7 @@ import 'dart:io';
 import '../native.dart';
 import '../storage/drive_location.dart';
 import '../state/drive_controller.dart';
+import 'invite_card.dart';
 import '../tunnel/cloudflared.dart';
 
 /// The drive's home screen once setup is done.
@@ -27,6 +28,7 @@ class _RunningScreenState extends State<RunningScreen> with WidgetsBindingObserv
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _refreshPermissions();
+    widget.controller.refreshInvites();
   }
 
   @override
@@ -143,6 +145,7 @@ class _RunningScreenState extends State<RunningScreen> with WidgetsBindingObserv
               ),
 
             const SizedBox(height: 8),
+            InviteCard(controller: c),
             Card(
               child: ListTile(
                 leading: const Icon(Icons.key),

@@ -45,6 +45,11 @@ class DriveStore {
     return DriveStore._(db, root);
   }
 
+  /// The open database, so features that live alongside the drive (invite
+  /// codes) can keep their tables in the same file and the same transaction
+  /// boundary as everything else.
+  Database get db => _db;
+
   bool get hasAccount =>
       _db.select('SELECT 1 FROM account WHERE id = 1').isNotEmpty;
 

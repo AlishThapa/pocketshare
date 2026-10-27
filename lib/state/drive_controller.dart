@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../cloudflare/api.dart';
+import '../invites/invite_store.dart';
 import '../cloudflare/host_provisioner.dart';
 import '../cloudflare/names.dart';
 import '../native.dart';
@@ -107,6 +108,7 @@ class DriveController extends ChangeNotifier {
     hasAutostartScreen = await Native.hasAutostartSettings();
 
     claim = await provisioner.saved();
+    isHost = await Secrets.isHost;
 
     if (claim == null) {
       stage = SetupStage.choosePath;
@@ -248,6 +250,54 @@ class DriveController extends ChangeNotifier {
   }
 
   // --- host path -----------------------------------------------------------
+
+  // --- invites (host only) -------------------------------------------------
+
+  /// Non-null only on a host. A guest holds no Cloudflare token, so it could
+  /// never honour a code it issued.
+  InviteStore? _inviteStore;
+
+  bool isHost = false;
+  List<Invite> invites = const [];
+
+  /// The address guests send their claim to: this phone's own.
+  String? get inviteHostname => claim?.hostname;
+
+  Future<void> refreshInvites() async {
+    isHost = await Secrets.isHost;
+    if (!isHost) {
+      invites = const [];
+      notifyListeners();
+      return;
+    }
+    final store = _store;
+    if (store == null) return;
+    final inviteStore = _inviteStore ??= InviteStore(store.db);
+    invites = inviteStore.list();
+    notifyListeners();
+  }
+
+  Future<Invite?> createInvite({String label = '', int maxUses = 1}) async {
+    final store = _store;
+    if (store == null || !await Secrets.isHost) return null;
+    final inviteStore = _inviteStore ??= InviteStore(store.db);
+    final made = inviteStore.create(label: label, maxUses: maxUses);
+    invites = inviteStore.list();
+    notifyListeners();
+    return made;
+  }
+
+  void revokeInvite(String code) {
+    _inviteStore?.revoke(code);
+    invites = _inviteStore?.list() ?? const [];
+    notifyListeners();
+  }
+
+  void removeInvite(String code) {
+    _inviteStore?.remove(code);
+    invites = _inviteStore?.list() ?? const [];
+    notifyListeners();
+  }
 
   /// Domains the pasted token can reach. Empty until a token is accepted.
   List<CfZone> cfZones = const [];
