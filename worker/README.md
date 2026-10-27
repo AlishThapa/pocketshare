@@ -1,6 +1,17 @@
 # PocketShare provisioning Worker
 
-Creates a tunnel + DNS record under `thapaalish.com.np` on demand, so the app's
+> **Optional, and no longer how the app works.**
+>
+> The app provisions from the host's own phone now, using a Cloudflare API
+> token that never leaves that device. Nothing in the app requires this
+> Worker, and deploying it means one service holding a credential for a whole
+> domain — which is exactly what moving provisioning onto the phone avoided.
+>
+> It is kept because it still works, and because a central provisioner is a
+> reasonable thing to want if you are handing addresses to people who will
+> never install the app. See the root `README.md` for the current design.
+
+Creates a tunnel + DNS record under a domain you own, on demand, so the app's
 users never touch Cloudflare.
 
 ## 1. Create the API token
@@ -47,7 +58,7 @@ Secrets live in Cloudflare, never in this repo. `wrangler.toml` is safe to commi
 ## 3. Mint invite codes
 
 ```bash
-wrangler kv key put --binding=CLAIMS "invite:KISHAN-7F2A" \
+wrangler kv key put --binding=CLAIMS "invite:FRIEND-7F2A" \
   '{"uses":0,"maxUses":1}' --remote
 ```
 
@@ -57,8 +68,8 @@ refused.
 ## API
 
 ```
-GET  /available?name=kishanfiles
-     -> { available: true, hostname: "kishanfiles.thapaalish.com.np" }
+GET  /available?name=myfiles
+     -> { available: true, hostname: "myfiles.thapaalish.com.np" }
 
 POST /claim  { name, inviteCode, deviceId }
      -> { hostname, tunnelToken, reused }
@@ -70,7 +81,7 @@ name — a different device gets 409.
 
 ## Operational notes
 
-- Names are a single DNS label (`kishanfiles`, not `a.b`). One label deep is
+- Names are a single DNS label (`myfiles`, not `a.b`). One label deep is
   what Universal SSL's wildcard covers on the free plan; deeper needs ACM.
 - A failed claim rolls back both the name reservation and the tunnel, so a
   Cloudflare hiccup doesn't leak a half-provisioned name.

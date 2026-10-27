@@ -94,7 +94,7 @@ class _ClaimScreenState extends State<ClaimScreen> {
               textCapitalization: TextCapitalization.none,
               decoration: InputDecoration(
                 labelText: 'Name',
-                hintText: 'kishanfiles',
+                hintText: 'myfiles',
                 border: const OutlineInputBorder(),
                 suffixIcon: _suffixIcon(),
               ),
