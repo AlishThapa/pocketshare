@@ -464,8 +464,20 @@ class DriveController extends ChangeNotifier {
     }
 
     if (await FlutterForegroundTask.isRunningService) {
-      FlutterForegroundTask.sendDataToTask('status');
-      return;
+      // A service record can outlive the task inside it: if the isolate threw
+      // on the way up, Android keeps the foreground service while nothing is
+      // listening. Asking that for status gets no reply, so the drive stays
+      // "not reachable" and this button does nothing, forever. When the last
+      // thing we saw was a failure, tear the service down and start a fresh
+      // one instead of talking to the dead one.
+      if (tunnelState == TunnelState.failed ||
+          tunnelState == TunnelState.stopped) {
+        await FlutterForegroundTask.stopService();
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+      } else {
+        FlutterForegroundTask.sendDataToTask('status');
+        return;
+      }
     }
 
     tunnelState = TunnelState.starting;

@@ -37,7 +37,41 @@ class DriveLocation {
       // Saved path gone: an SD card pulled out, or all-files access revoked.
       // Fall through rather than leaving the drive dead.
     }
+
+    // A drive that disappears when the app is uninstalled is not a drive, so
+    // the shared folder is the default rather than a thing to opt into. It
+    // needs all-files access, and only when that is missing does this fall
+    // back to the app's own directory.
+    final shared = await sharedRoot();
+    if (shared != null && await _isUsable(shared)) return shared;
+
     return fallbackRoot();
+  }
+
+  /// `/storage/emulated/0/PocketShare` — the folder a person can actually
+  /// find in Files, and which survives uninstalling the app. Null when the
+  /// volume cannot be located or all-files access has not been granted.
+  static Future<Directory?> sharedRoot() async {
+    try {
+      final externals = await getExternalStorageDirectories();
+      if (externals == null || externals.isEmpty) return null;
+
+      // getExternalStorageDirectories gives the app-private path on each
+      // volume; trimming /Android/data/... yields the volume root.
+      final appDir = externals.first.path;
+      final marker = '${p.separator}Android${p.separator}data';
+      final cut = appDir.indexOf(marker);
+      if (cut <= 0) return null;
+
+      final dir = Directory(p.join(appDir.substring(0, cut), folderName));
+      await dir.create(recursive: true);
+      return dir;
+    } on MissingPluginException {
+      return null;
+    } on FileSystemException {
+      // No all-files access: creating outside Android/data is refused.
+      return null;
+    }
   }
 
   /// Always-writable location inside the app's own storage. No permission
