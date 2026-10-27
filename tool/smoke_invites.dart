@@ -48,10 +48,10 @@ void main() {
           'alishm.thapaalish.com.np');
 
   print('\n-- issuing --');
-  final one = invites.create(label: 'Kishan', maxUses: 1);
+  final one = invites.create(label: 'spare phone', maxUses: 1);
   check('starts unused', one.uses == 0 && one.remaining == 1);
   check('is usable', one.usable);
-  check('keeps its label', one.label == 'Kishan');
+  check('keeps its label', one.label == 'spare phone');
   check('share string carries the host',
       one.shareString('alishm.thapaalish.com.np') ==
           '${one.code}@alishm.thapaalish.com.np');

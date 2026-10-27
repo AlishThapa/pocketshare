@@ -208,7 +208,7 @@ class _NewCodeDialogState extends State<_NewCodeDialog> {
             autocorrect: false,
             decoration: const InputDecoration(
               labelText: 'Who is it for? (optional)',
-              hintText: 'Kishan',
+              hintText: 'Dad\'s phone',
             ),
           ),
           const SizedBox(height: 20),
