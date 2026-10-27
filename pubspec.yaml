@@ -1,0 +1,48 @@
+name: pocketshare
+description: Turn a spare phone into a private drive reachable from anywhere.
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # local HTTP server serving the browser UI + /api
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+  shelf_static: ^1.1.3
+  mime: ^2.0.0
+
+  # tunnel provisioning + health probing
+  http: ^1.2.2
+
+  # storage
+  path_provider: ^2.1.5
+  path: ^1.9.1
+  sqlite3: ^2.4.6
+  # sqlite3 is FFI bindings only; this ships the actual libsqlite3.so for
+  # Android. Without it DriveStore.open fails with a dlopen error at runtime.
+  sqlite3_flutter_libs: ^0.5.26
+  flutter_secure_storage: ^9.2.4
+
+  # auth
+  crypto: ^3.0.6
+
+  # keeps the drive alive in the background with a persistent notification
+  flutter_foreground_task: ^8.10.4
+
+  # runtime permissions (storage / notifications)
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/web/

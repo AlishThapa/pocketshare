@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>PocketShare</title>
+<link rel="stylesheet" href="style.css?v=3">
+</head>
+<body>
+
+<div id="login" class="screen">
+  <!-- method="post" matters even though JS calls preventDefault: if the
+       script has not attached its listener yet, the browser submits the
+       form natively, and a GET would put the password in the URL, in
+       browser history and in Referer headers. -->
+  <form class="card" id="login-form" method="post" action="/" autocomplete="on">
+    <h1>PocketShare</h1>
+    <p class="muted" id="login-host"></p>
+    <label for="u">Username</label>
+    <input id="u" name="username" autocomplete="username" required autocapitalize="none" spellcheck="false">
+    <label for="p">Password</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit" id="login-btn">Sign in</button>
+    <p class="error" id="login-error" role="alert"></p>
+  </form>
+</div>
+
+<div id="app" class="screen" hidden>
+  <header>
+    <div class="bar">
+      <strong class="brand">PocketShare</strong>
+      <input id="search" type="search" placeholder="Search files" aria-label="Search files">
+      <button id="btn-trash" class="ghost" title="Trash">Trash</button>
+      <button id="btn-logout" class="ghost" title="Sign out">Sign out</button>
+    </div>
+    <nav id="crumbs" aria-label="Breadcrumb"></nav>
+  </header>
+
+  <main>
+    <div class="actions">
+      <button id="btn-upload" class="primary">Upload files</button>
+      <button id="btn-mkdir">New folder</button>
+      <input id="file-input" type="file" multiple hidden>
+    </div>
+
+    <div id="uploads"></div>
+    <div id="list" class="list" aria-live="polite"></div>
+    <p class="empty" id="empty" hidden>Nothing here yet.</p>
+  </main>
+</div>
+
+<div id="drop-hint">Drop to upload</div>
+<script src="app.js?v=3"></script>
+</body>
+</html>

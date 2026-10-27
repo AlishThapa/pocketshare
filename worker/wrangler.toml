@@ -1,0 +1,24 @@
+name = "pocketshare-provision"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+
+# Served from the domain it provisions under, so there is no workers.dev
+# subdomain to register. custom_domain creates the DNS record itself.
+routes = [
+  { pattern = "provision.thapaalish.com.np", custom_domain = true }
+]
+
+[vars]
+ROOT_DOMAIN = "thapaalish.com.np"
+# Not a secret: this id is visible on every page of the dashboard.
+CF_ACCOUNT_ID = "bdf78fcabaaf5a8baf447c5abb24e956"
+
+# Claimed names, invite codes, and the cached zone id.
+[[kv_namespaces]]
+binding = "CLAIMS"
+id = "3369854b927247b0b633937aa38f929f"
+
+# The only secret, set with `wrangler secret put CF_API_TOKEN`:
+#   Account > Cloudflare Tunnel > Edit
+#   Zone    > DNS              > Edit   (thapaalish.com.np only)
+# CF_ZONE_ID is optional; the Worker resolves it from ROOT_DOMAIN and caches it.

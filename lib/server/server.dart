@@ -1,0 +1,540 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:mime/mime.dart';
+import 'package:path/path.dart' as p;
+import 'package:shelf/shelf.dart';
+import 'package:shelf/shelf_io.dart' as shelf_io;
+import 'package:shelf_router/shelf_router.dart';
+
+import 'auth.dart';
+import 'files.dart';
+import 'store.dart';
+import 'uploads.dart';
+
+/// The drive's HTTP server.
+///
+/// Binds loopback only: the sole way in is the Cloudflare tunnel running on
+/// this device. That keeps the drive off the local Wi-Fi network and makes
+/// `CF-Connecting-IP` trustworthy, since nothing else can reach the socket.
+class DriveServer {
+  DriveServer({
+    required this.store,
+    required this.auth,
+    required this.files,
+    required this.uploads,
+    required this.webRoot,
+    this.port = 8080,
+  });
+
+  final DriveStore store;
+  final Auth auth;
+  final DriveFiles files;
+  final UploadManager uploads;
+
+  /// Directory holding the browser UI, unpacked from assets at startup.
+  final Directory webRoot;
+  final int port;
+
+  HttpServer? _server;
+  Timer? _sweeper;
+
+  final _LoginThrottle _throttle = _LoginThrottle();
+
+  int get boundPort => _server?.port ?? port;
+  bool get isRunning => _server != null;
+
+  Future<void> start() async {
+    if (_server != null) return;
+
+    final handler = const Pipeline()
+        .addMiddleware(_securityHeaders)
+        .addMiddleware(_authGate)
+        .addHandler(_router.call);
+
+    _server = await shelf_io.serve(
+      handler,
+      InternetAddress.loopbackIPv4,
+      port,
+      poweredByHeader: null,
+    );
+
+    _sweeper = Timer.periodic(
+      const Duration(hours: 1),
+      (_) => unawaited(uploads.sweep()),
+    );
+  }
+
+  Future<void> stop() async {
+    _sweeper?.cancel();
+    _sweeper = null;
+    await _server?.close(force: true);
+    _server = null;
+  }
+
+  Router get _router => Router()
+    ..get('/api/health', _health)
+    ..post('/api/auth/login', _login)
+    ..post('/api/auth/logout', _logout)
+    ..get('/api/me', _me)
+    ..get('/api/files', _list)
+    ..get('/api/download', _download)
+    ..get('/api/search', _search)
+    ..post('/api/folders', _mkdir)
+    ..post('/api/rename', _rename)
+    ..post('/api/move', _move)
+    ..post('/api/delete', _delete)
+    ..get('/api/trash', _trash)
+    ..post('/api/trash/restore', _restore)
+    ..post('/api/trash/empty', _emptyTrash)
+    ..post('/api/uploads', _createUpload)
+    ..put('/api/uploads/<id>/chunks/<index>', _putChunk)
+    ..get('/api/uploads/<id>', _uploadStatus)
+    ..post('/api/uploads/<id>/complete', _completeUpload)
+    ..all('/api/<rest|.*>', (Request _) => _json({'error': 'not found'}, 404))
+    ..all('/<rest|.*>', _serveWebUi);
+
+  // --- middleware ----------------------------------------------------------
+
+  /// Endpoints reachable without a session. Everything else requires one.
+  static const Set<String> _publicPaths = {
+    '/api/health',
+    '/api/auth/login',
+  };
+
+  Handler Function(Handler) get _authGate => (Handler inner) {
+        return (Request request) async {
+          final path = '/${request.url.path}';
+
+          if (path.startsWith('/api/') && !_publicPaths.contains(path)) {
+            final token = _sessionToken(request);
+            if (token == null || !auth.validate(token)) {
+              return _json({'error': 'unauthorized'}, 401);
+            }
+          }
+
+          // Reject cross-site state changes. SameSite=Strict already blocks
+          // the cookie, but an explicit Origin check fails closed if a future
+          // browser or client relaxes that.
+          if (_isMutation(request.method) && path.startsWith('/api/')) {
+            final origin = request.headers['origin'];
+            final host = request.headers['host'];
+            if (origin != null && host != null) {
+              final originHost = Uri.tryParse(origin)?.host;
+              if (originHost != null && originHost != host.split(':').first) {
+                return _json({'error': 'cross-origin request refused'}, 403);
+              }
+            }
+          }
+
+          return inner(request);
+        };
+      };
+
+  static bool _isMutation(String method) =>
+      method == 'POST' || method == 'PUT' || method == 'DELETE' || method == 'PATCH';
+
+  Handler Function(Handler) get _securityHeaders => (Handler inner) {
+        return (Request request) async {
+          final response = await inner(request);
+          return response.change(headers: {
+            // Everything here is private and served through Cloudflare, which
+            // otherwise applies its own default TTL to static extensions —
+            // caching the UI for hours and, worse, making file listings
+            // edge-cacheable. Nothing from this server may be stored.
+            'Cache-Control': 'no-store, private',
+            'X-Content-Type-Options': 'nosniff',
+            'X-Frame-Options': 'DENY',
+            'Referrer-Policy': 'no-referrer',
+            // The UI is fully self-hosted, so nothing third-party is allowed
+            // to load or to be connected to.
+            'Content-Security-Policy':
+                "default-src 'self'; img-src 'self' data: blob:; "
+                "media-src 'self' blob:; object-src 'none'; "
+                "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+          });
+        };
+      };
+
+  // --- auth ----------------------------------------------------------------
+
+  Response _health(Request request) => _json({
+        'ok': true,
+        'service': 'pocketshare',
+        'claimed': store.hasAccount,
+      });
+
+  Future<Response> _login(Request request) async {
+    final ip = _clientIp(request);
+    if (!_throttle.allow(ip)) {
+      return _json(
+        {'error': 'too many attempts, wait a minute'},
+        429,
+        {'Retry-After': '60'},
+      );
+    }
+
+    final body = await _readJson(request);
+    final username = (body['username'] as String?)?.trim() ?? '';
+    final password = body['password'] as String? ?? '';
+
+    final token = await auth.login(
+      username: username,
+      password: password,
+      userAgent: request.headers['user-agent'],
+    );
+
+    if (token == null) {
+      _throttle.penalise(ip);
+      return _json({'error': 'wrong username or password'}, 401);
+    }
+
+    _throttle.clear(ip);
+    return _json({'ok': true}, 200, {
+      'Set-Cookie': _buildCookie(token),
+    });
+  }
+
+  Response _logout(Request request) {
+    final token = _sessionToken(request);
+    if (token != null) auth.logout(token);
+    return _json({'ok': true}, 200, {
+      'Set-Cookie': '${Auth.sessionCookie}=; Path=/; HttpOnly; Secure; '
+          'SameSite=Strict; Max-Age=0',
+    });
+  }
+
+  Response _me(Request request) {
+    final token = _sessionToken(request)!;
+    return _json({'username': auth.usernameOf(token)});
+  }
+
+  static String _buildCookie(String token) =>
+      '${Auth.sessionCookie}=$token; Path=/; HttpOnly; Secure; '
+      'SameSite=Strict; Max-Age=${const Duration(days: 30).inSeconds}';
+
+  static String? _sessionToken(Request request) {
+    final raw = request.headers['cookie'];
+    if (raw == null) return null;
+    for (final part in raw.split(';')) {
+      final kv = part.trim().split('=');
+      if (kv.length >= 2 && kv.first == Auth.sessionCookie) {
+        return kv.sublist(1).join('=');
+      }
+    }
+    return null;
+  }
+
+  /// Real client address. Only cloudflared can reach this socket, so the
+  /// Cloudflare-set header is authoritative here.
+  static String _clientIp(Request request) =>
+      request.headers['cf-connecting-ip'] ??
+      request.headers['x-forwarded-for']?.split(',').first.trim() ??
+      'local';
+
+  // --- browsing ------------------------------------------------------------
+
+  Future<Response> _list(Request request) => _guard(() async {
+        final path = request.url.queryParameters['path'] ?? '';
+        return _json({'path': path, 'entries': await files.list(path)});
+      });
+
+  Future<Response> _search(Request request) => _guard(() async {
+        final q = request.url.queryParameters['q'] ?? '';
+        return _json({'results': await files.search(q)});
+      });
+
+  Future<Response> _trash(Request request) => _guard(() async {
+        return _json({'entries': await files.listTrash()});
+      });
+
+  // --- mutations -----------------------------------------------------------
+
+  Future<Response> _mkdir(Request request) => _guard(() async {
+        final body = await _readJson(request);
+        await files.mkdir(body['path'] as String? ?? '');
+        return _json({'ok': true});
+      });
+
+  Future<Response> _rename(Request request) => _guard(() async {
+        final body = await _readJson(request);
+        await files.rename(body['from'] as String, body['to'] as String);
+        return _json({'ok': true});
+      });
+
+  Future<Response> _move(Request request) => _guard(() async {
+        final body = await _readJson(request);
+        await files.move(body['from'] as String, body['toDir'] as String);
+        return _json({'ok': true});
+      });
+
+  Future<Response> _delete(Request request) => _guard(() async {
+        final body = await _readJson(request);
+        await files.trash(body['path'] as String);
+        return _json({'ok': true});
+      });
+
+  Future<Response> _restore(Request request) => _guard(() async {
+        final body = await _readJson(request);
+        await files.restore(body['id'] as String);
+        return _json({'ok': true});
+      });
+
+  Future<Response> _emptyTrash(Request request) => _guard(() async {
+        await files.emptyTrash();
+        return _json({'ok': true});
+      });
+
+  // --- uploads -------------------------------------------------------------
+
+  Future<Response> _createUpload(Request request) => _guard(() async {
+        final body = await _readJson(request);
+        final session = await uploads.create(
+          destinationPath: body['path'] as String,
+          totalSize: (body['size'] as num).toInt(),
+          chunkSize: (body['chunkSize'] as num?)?.toInt() ?? 8 * 1024 * 1024,
+        );
+        return _json(session.toJson());
+      });
+
+  Future<Response> _putChunk(Request request, String id, String index) =>
+      _guard(() async {
+        final session = uploads.find(id);
+        if (session == null) return _json({'error': 'no such upload'}, 404);
+
+        final n = int.tryParse(index);
+        if (n == null) return _json({'error': 'bad chunk index'}, 400);
+
+        await uploads.writeChunk(session, n, request.read());
+        return _json({'ok': true, 'index': n});
+      });
+
+  Future<Response> _uploadStatus(Request request, String id) => _guard(() async {
+        final session = uploads.find(id);
+        if (session == null) return _json({'error': 'no such upload'}, 404);
+        return _json({
+          ...session.toJson(),
+          'missing': await uploads.missing(session),
+        });
+      });
+
+  Future<Response> _completeUpload(Request request, String id) => _guard(() async {
+        final session = uploads.find(id);
+        if (session == null) return _json({'error': 'no such upload'}, 404);
+
+        final file = await uploads.complete(session);
+        return _json({
+          'ok': true,
+          'path': p.relative(file.path, from: files.root.path),
+        });
+      });
+
+  // --- download ------------------------------------------------------------
+
+  /// Serves a file with Range support, so the browser can seek in a video
+  /// instead of buffering the whole thing first.
+  Future<Response> _download(Request request) => _guard(() async {
+        final relative = request.url.queryParameters['path'] ?? '';
+        final file = resolveFile(files.root, relative);
+        if (file == null) return _json({'error': 'bad path'}, 400);
+        if (!await file.exists()) return _json({'error': 'not found'}, 404);
+
+        final length = await file.length();
+        final type = lookupMimeType(file.path) ?? 'application/octet-stream';
+        final inline = request.url.queryParameters['inline'] == '1';
+        final disposition = inline
+            ? 'inline'
+            : 'attachment; filename="${_escapeFilename(p.basename(file.path))}"';
+
+        final range = _parseRange(request.headers['range'], length);
+        if (range == null) {
+          return Response.ok(
+            file.openRead(),
+            headers: {
+              'Content-Type': type,
+              'Content-Length': '$length',
+              'Accept-Ranges': 'bytes',
+              'Content-Disposition': disposition,
+            },
+          );
+        }
+
+        if (range.unsatisfiable) {
+          return Response(416, headers: {'Content-Range': 'bytes */$length'});
+        }
+
+        return Response(
+          206,
+          body: file.openRead(range.start, range.endExclusive),
+          headers: {
+            'Content-Type': type,
+            'Content-Length': '${range.endExclusive - range.start}',
+            'Content-Range': 'bytes ${range.start}-${range.endExclusive - 1}/$length',
+            'Accept-Ranges': 'bytes',
+            'Content-Disposition': disposition,
+          },
+        );
+      });
+
+  static String _escapeFilename(String name) =>
+      name.replaceAll('"', '').replaceAll(RegExp(r'[\r\n]'), '');
+
+  static _ByteRange? _parseRange(String? header, int length) {
+    if (header == null || !header.startsWith('bytes=')) return null;
+
+    final spec = header.substring(6).split(',').first.trim();
+    final dash = spec.indexOf('-');
+    if (dash < 0) return null;
+
+    final rawStart = spec.substring(0, dash).trim();
+    final rawEnd = spec.substring(dash + 1).trim();
+
+    int start;
+    int endExclusive;
+
+    if (rawStart.isEmpty) {
+      // Suffix form: "bytes=-500" means the last 500 bytes.
+      final suffix = int.tryParse(rawEnd);
+      if (suffix == null || suffix <= 0) return null;
+      start = length - suffix < 0 ? 0 : length - suffix;
+      endExclusive = length;
+    } else {
+      final s = int.tryParse(rawStart);
+      if (s == null) return null;
+      start = s;
+      if (rawEnd.isEmpty) {
+        endExclusive = length;
+      } else {
+        final e = int.tryParse(rawEnd);
+        if (e == null) return null;
+        endExclusive = e + 1 > length ? length : e + 1;
+      }
+    }
+
+    if (start >= length || start < 0 || endExclusive <= start) {
+      return _ByteRange(0, 0, unsatisfiable: true);
+    }
+    return _ByteRange(start, endExclusive);
+  }
+
+  // --- static web UI -------------------------------------------------------
+
+  Future<Response> _serveWebUi(Request request) async {
+    final requested = request.url.path.isEmpty ? 'index.html' : request.url.path;
+    final resolved = resolveFile(webRoot, requested);
+
+    // Unknown paths fall through to index.html so client-side routes survive
+    // a reload.
+    final file = (resolved != null && await File(resolved.path).exists())
+        ? File(resolved.path)
+        : File(p.join(webRoot.path, 'index.html'));
+
+    if (!await file.exists()) {
+      return Response.notFound('UI not installed');
+    }
+
+    return Response.ok(
+      file.openRead(),
+      headers: {
+        'Content-Type': lookupMimeType(file.path) ?? 'text/html',
+        'Content-Length': '${await file.length()}',
+      },
+    );
+  }
+
+  // --- plumbing ------------------------------------------------------------
+
+  /// Maps domain errors onto status codes in one place, so each route can just
+  /// throw and stay readable.
+  static Future<Response> _guard(Future<Response> Function() body) async {
+    try {
+      return await body();
+    } on DrivePathError catch (e) {
+      return _json({'error': e.message}, 400);
+    } on DriveNotFound catch (e) {
+      return _json({'error': 'not found: ${e.path}'}, 404);
+    } on DriveConflict catch (e) {
+      return _json({'error': e.message}, 409);
+    } on FormatException catch (e) {
+      return _json({'error': 'bad request: ${e.message}'}, 400);
+    } on TypeError {
+      return _json({'error': 'bad request: missing or wrong field'}, 400);
+    } on FileSystemException catch (e) {
+      return _json({'error': 'storage error: ${e.osError?.message ?? e.message}'}, 500);
+    }
+  }
+
+  static Future<Map<String, Object?>> _readJson(Request request) async {
+    final text = await request.readAsString();
+    if (text.trim().isEmpty) return {};
+    final decoded = jsonDecode(text);
+    if (decoded is! Map) throw const FormatException('expected a JSON object');
+    return decoded.cast<String, Object?>();
+  }
+
+  static Response _json(
+    Object? body, [
+    int status = 200,
+    Map<String, String> headers = const {},
+  ]) =>
+      Response(
+        status,
+        body: jsonEncode(body),
+        headers: {'Content-Type': 'application/json', ...headers},
+      );
+}
+
+class _ByteRange {
+  const _ByteRange(this.start, this.endExclusive, {this.unsatisfiable = false});
+  final int start;
+  final int endExclusive;
+  final bool unsatisfiable;
+}
+
+/// Per-IP throttle on login.
+///
+/// Password verification is deliberately expensive, which makes an open login
+/// endpoint a CPU-exhaustion lever on a phone. This caps both brute force and
+/// that.
+class _LoginThrottle {
+  static const int _maxFailures = 8;
+  static const Duration _window = Duration(minutes: 1);
+
+  final Map<String, _Attempts> _byIp = {};
+
+  bool allow(String ip) {
+    final entry = _byIp[ip];
+    if (entry == null) return true;
+    if (DateTime.now().difference(entry.windowStart) > _window) {
+      _byIp.remove(ip);
+      return true;
+    }
+    return entry.failures < _maxFailures;
+  }
+
+  void penalise(String ip) {
+    final now = DateTime.now();
+    final entry = _byIp[ip];
+    if (entry == null || now.difference(entry.windowStart) > _window) {
+      _byIp[ip] = _Attempts(windowStart: now, failures: 1);
+    } else {
+      entry.failures++;
+    }
+
+    // Bound the map so a spray of spoofed-looking addresses cannot grow it
+    // without limit.
+    if (_byIp.length > 1024) {
+      final cutoff = now.subtract(_window);
+      _byIp.removeWhere((_, v) => v.windowStart.isBefore(cutoff));
+    }
+  }
+
+  void clear(String ip) => _byIp.remove(ip);
+}
+
+class _Attempts {
+  _Attempts({required this.windowStart, required this.failures});
+  final DateTime windowStart;
+  int failures;
+}

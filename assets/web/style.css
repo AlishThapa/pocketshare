@@ -1,0 +1,241 @@
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #e3e6ea;
+  --text: #15181d;
+  --muted: #697280;
+  --accent: #3b5bdb;
+  --accent-text: #ffffff;
+  --danger: #c92a2a;
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --surface: #1c1f25;
+    --border: #2b3038;
+    --text: #e8eaed;
+    --muted: #949cab;
+    --accent: #5c7cfa;
+    --accent-text: #0d0f12;
+    --danger: #ff6b6b;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* An id selector (#login below) outranks `.screen[hidden]`, so without
+   !important the login screen's `display: grid` wins and it never hides —
+   signing in appears to do nothing. */
+[hidden] { display: none !important; }
+
+/* --- login --- */
+#login {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px 24px;
+  width: min(380px, 100%);
+}
+
+.card h1 { margin: 0 0 4px; font-size: 22px; }
+
+label {
+  display: block;
+  margin: 16px 0 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+input[type=text], input[type=password], input[type=search], input:not([type]) {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 16px; /* 16px stops iOS Safari zooming on focus */
+}
+
+input:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  font: inherit;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: .55; cursor: default; }
+
+button.primary, #login-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+#login-btn { width: 100%; margin-top: 22px; }
+button.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+
+.muted { color: var(--muted); font-size: 13px; margin: 0; }
+.error { color: var(--danger); font-size: 13px; min-height: 1.5em; margin: 12px 0 0; }
+
+/* --- app --- */
+header {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  z-index: 5;
+}
+
+.bar { display: flex; gap: 8px; align-items: center; }
+.brand { margin-right: 4px; white-space: nowrap; }
+.bar #search { flex: 1; min-width: 0; }
+
+#crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+#crumbs button {
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+#crumbs span { padding: 2px 0; }
+
+main { padding: 16px; max-width: 980px; margin: 0 auto; }
+.actions { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+
+.list {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.row:last-child { border-bottom: none; }
+
+.row .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+
+.row .name:hover { color: var(--accent); }
+.row .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.row .icon { width: 18px; text-align: center; flex-shrink: 0; }
+
+.row menu {
+  display: flex;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+}
+
+.row menu button {
+  border: none;
+  background: none;
+  color: var(--muted);
+  padding: 6px;
+  font-size: 12px;
+}
+
+.row menu button:hover { color: var(--text); }
+
+.empty { color: var(--muted); text-align: center; padding: 36px 0; }
+
+/* --- uploads --- */
+#uploads:not(:empty) { margin-bottom: 16px; display: grid; gap: 8px; }
+
+.upload {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.upload .top { display: flex; justify-content: space-between; gap: 12px; }
+.upload .top span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+progress {
+  width: 100%;
+  height: 5px;
+  margin-top: 8px;
+  accent-color: var(--accent);
+}
+
+.upload.failed { border-color: var(--danger); color: var(--danger); }
+
+/* --- drag & drop --- */
+#drop-hint {
+  position: fixed;
+  inset: 0;
+  display: none;
+  place-items: center;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 3px dashed var(--accent);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  z-index: 50;
+  pointer-events: none;
+}
+
+body.dragging #drop-hint { display: grid; }
+
+@media (max-width: 560px) {
+  .brand { display: none; }
+  .row .meta { display: none; }
+}
