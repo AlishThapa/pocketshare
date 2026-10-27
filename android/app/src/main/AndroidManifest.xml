@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
@@ -20,12 +21,18 @@
         android:maxSdkVersion="29"/>
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
 
+    <!-- The Cloudflare API token and the drive's session keys live in
+         Keystore-backed secure storage. Backups would copy those encrypted
+         blobs off the device, where they are useless without the Keystore key
+         and only produce broken restores. Nothing here should leave the phone. -->
     <application
         android:label="PocketShare"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:requestLegacyExternalStorage="true"
-        android:extractNativeLibs="true">
+        android:extractNativeLibs="true"
+        tools:replace="android:allowBackup"
+        android:allowBackup="false">
         <activity
             android:name=".MainActivity"
             android:exported="true"
