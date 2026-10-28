@@ -65,6 +65,20 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <!-- Lets a tapped file open in a viewer. A file:// URI crossing an
+             app boundary throws FileUriExposedException on Android 7+, so the
+             viewer gets a content:// URI with a read-only grant for that one
+             file. Not exported: only grants this app issues can be used. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

@@ -3,8 +3,8 @@ import 'package:flutter/material.dart';
 import 'state/drive_controller.dart';
 import 'ui/claim_screen.dart';
 import 'ui/connect_cloudflare_screen.dart';
+import 'ui/home_screen.dart';
 import 'ui/login_screen.dart';
-import 'ui/running_screen.dart';
 import 'ui/start_screen.dart';
 
 /// Worker base URL. The default is the deployed provisioning Worker; a fork
@@ -18,6 +18,82 @@ const String provisionEndpoint = String.fromEnvironment(
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const PocketShareApp());
+}
+
+
+/// The seed every colour in the app comes from. One sober blue, because this
+/// screen asks people to trust it with their files and a loud palette reads
+/// as a different kind of app entirely.
+const Color _seed = Color(0xFF3B5BDB);
+
+/// Shared theme, defined once so both tabs and every setup screen agree.
+///
+/// Mostly a flattening pass: Material 3 tints and elevates surfaces by
+/// default, which on a page made of stacked panels produces a gradient of
+/// near-identical greys. Flat panels on a plain background separate by shape
+/// and spacing instead.
+ThemeData appTheme(Brightness brightness) {
+  final scheme = ColorScheme.fromSeed(seedColor: _seed, brightness: brightness);
+  final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(14));
+
+  return ThemeData(
+    colorScheme: scheme,
+    useMaterial3: true,
+    scaffoldBackgroundColor: scheme.surface,
+    appBarTheme: AppBarTheme(
+      backgroundColor: scheme.surface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      centerTitle: false,
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      backgroundColor: scheme.surface,
+      surfaceTintColor: Colors.transparent,
+      indicatorColor: scheme.primaryContainer,
+      elevation: 0,
+      height: 68,
+      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        shape: shape,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        shape: shape,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(shape: shape),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+      filled: true,
+      fillColor: scheme.surfaceContainerLow,
+    ),
+    dialogTheme: DialogThemeData(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+    ),
+    // Floating, so it clears the navigation bar instead of sitting under it.
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      insetPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+    ),
+    bottomSheetTheme: const BottomSheetThemeData(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+    ),
+    listTileTheme: ListTileThemeData(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
+    chipTheme: ChipThemeData(shape: shape),
+  );
 }
 
 class PocketShareApp extends StatefulWidget {
@@ -44,19 +120,11 @@ class _PocketShareAppState extends State<PocketShareApp> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = ColorScheme.fromSeed(seedColor: const Color(0xFF3B5BDB));
-
     return MaterialApp(
       title: 'PocketShare',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorScheme: scheme, useMaterial3: true),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF3B5BDB),
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
+      theme: appTheme(Brightness.light),
+      darkTheme: appTheme(Brightness.dark),
       home: AnimatedBuilder(
         animation: _controller,
         builder: (context, _) => switch (_controller.stage) {
@@ -66,7 +134,7 @@ class _PocketShareAppState extends State<PocketShareApp> {
           SetupStage.connectCloudflare =>
             ConnectCloudflareScreen(controller: _controller),
           SetupStage.createLogin => LoginSetupScreen(controller: _controller),
-          SetupStage.ready => RunningScreen(controller: _controller),
+          SetupStage.ready => HomeScreen(controller: _controller),
         },
       ),
     );
@@ -77,6 +145,25 @@ class _Splash extends StatelessWidget {
   const _Splash();
 
   @override
-  Widget build(BuildContext context) =>
-      const Scaffold(body: Center(child: CircularProgressIndicator()));
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cloud_queue_rounded, size: 44, color: scheme.primary),
+            const SizedBox(height: 22),
+            SizedBox(
+              width: 120,
+              child: LinearProgressIndicator(
+                borderRadius: BorderRadius.circular(4),
+                backgroundColor: scheme.surfaceContainerHighest,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

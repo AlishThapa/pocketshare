@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../native.dart';
+import 'migrate.dart';
 
 /// Where the drive keeps its files.
 ///
@@ -17,6 +18,11 @@ class DriveLocation {
   static const _storage = FlutterSecureStorage();
   static const _key = 'drive_root';
 
+  /// Whether the folder at [_key] is one this app created, as opposed to one
+  /// the user pointed us at. Only an app-made folder may be deleted when the
+  /// drive moves somewhere else.
+  static const _keyAppMade = 'drive_root_app_made';
+
   /// Folder name created on whichever volume the user picks. Deliberately
   /// plain, so it reads as theirs in the phone's own Files app rather than
   /// looking like app internals.
@@ -24,8 +30,16 @@ class DriveLocation {
 
   static Future<String?> savedPath() => _storage.read(key: _key);
 
-  static Future<void> save(String path) =>
-      _storage.write(key: _key, value: path);
+  static Future<void> save(String path, {required bool appCreated}) async {
+    await _storage.write(key: _key, value: path);
+    await _storage.write(key: _keyAppMade, value: appCreated ? 'yes' : 'no');
+  }
+
+  /// True only when the saved folder is one this app made for itself. Absent
+  /// means an older install, whose folder could only ever have been an
+  /// app-made `PocketShare` one.
+  static Future<bool> rootIsAppCreated() async =>
+      (await _storage.read(key: _keyAppMade) ?? 'yes') == 'yes';
 
   /// The directory to serve from, in order of preference:
   /// the user's choice, then app-private storage as a usable fallback.
@@ -132,37 +146,13 @@ class DriveLocation {
     ];
   }
 
-  /// Moves everything from [from] into [to], then removes the old folder.
-  ///
-  /// Copies rather than renames across volumes, since rename(2) cannot cross
-  /// filesystems and internal storage and an SD card are never the same one.
-  static Future<int> migrate(Directory from, Directory to) async {
-    if (p.equals(from.path, to.path)) return 0;
-    if (!await from.exists()) return 0;
-
-    await to.create(recursive: true);
-    var moved = 0;
-
-    await for (final entity in from.list(recursive: true, followLinks: false)) {
-      final relative = p.relative(entity.path, from: from.path);
-      final target = p.join(to.path, relative);
-
-      if (entity is Directory) {
-        await Directory(target).create(recursive: true);
-      } else if (entity is File) {
-        await Directory(p.dirname(target)).create(recursive: true);
-        await entity.copy(target);
-        moved++;
-      }
-    }
-
-    try {
-      await from.delete(recursive: true);
-    } on FileSystemException {
-      // Copies are safely in place; leaving the originals is the safe failure.
-    }
-    return moved;
-  }
+  /// Moves everything from [from] into [to]. See [FolderMigration.move].
+  static Future<MoveResult> migrate(
+    Directory from,
+    Directory to, {
+    required bool deleteSource,
+  }) =>
+      FolderMigration.move(from, to, deleteSource: deleteSource);
 }
 
 class StorageVolume {

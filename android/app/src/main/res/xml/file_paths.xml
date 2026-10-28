@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What the FileProvider is allowed to hand out.
+
+  Scoped to /storage rather than "/" on purpose: the drive's folder lives on
+  a storage volume, and nothing under /data (the app's own databases, the
+  Keystore-backed secure storage, other apps' sandboxes) has any business
+  being shareable. A grant is still issued per file, for one Intent, read
+  only — this only bounds what such a grant could ever name.
+-->
+<paths>
+    <root-path name="storage" path="/storage/" />
+</paths>

@@ -52,13 +52,15 @@ the single thing worth attacking, and a drive is not worth that.
 | `lib/server/` | the drive itself: store, auth, files, uploads, HTTP routes |
 | `lib/cloudflare/` | Cloudflare API client, name rules, host provisioner |
 | `lib/invites/` | invite codes, kept on the host's phone |
+| `lib/files/` | reading one directory for the in-app browser |
 | `lib/storage/` | credential storage and the drive's folder on disk |
 | `lib/tunnel/` | cloudflared supervision |
 | `lib/state/` | lifecycle controller the UI renders |
-| `lib/ui/` | start → connect or claim → login → running |
+| `lib/ui/` | start → connect or claim → login → the two-tab home |
 | `assets/web/` | the UI people see in a browser |
 | `android/app/src/main/jniLibs/` | prebuilt cloudflared, named `libcloudflared.so` |
 | `worker/` | optional: the original provisioning Worker, no longer required |
+| `test/` | widget tests for the running screens, against stubbed channels |
 
 ## Design notes
 
@@ -169,6 +171,73 @@ the browser submits natively — and a GET would write the password into the
 URL, into browser history and into `Referer` headers. Observed in the wild,
 not hypothetical.
 
+**The app is two tabs, not one list.** One screen held the status, the
+address, the storage path, the permission chores, the invites and the login,
+and read as a pile. *Drive* answers "is it up and what is its address";
+*Files* answers "what is actually in it". The address and its status are one
+panel rather than two, because a green dot in one card and a hostname in
+another asks the reader to join them up.
+
+**The folder picker is the app's own, not Android's.**
+`ACTION_OPEN_DOCUMENT_TREE` returns a document URI, and the drive serves
+files through plain paths from a background isolate with no Activity to
+re-grant such a URI to. With all-files access already held, browsing the
+filesystem directly shows the same path the server will open.
+
+**Not every folder may be the drive.** Whatever is chosen becomes the root of
+something published to the internet behind one password, so `FolderRules`
+refuses a volume root — which would publish the camera roll, downloads and
+every other app's shared files on one tap — and refuses `Android/`, where the
+contents belong to other apps and vanish when they are uninstalled. A path
+that does not normalise to itself is refused rather than silently corrected,
+so the path shown in the warning is the path that gets served. A folder that
+already has contents is confirmed, with the count, before it is used. The
+rule runs again in `changeStorageToPath`: it is the one call that decides what
+the whole drive serves, so it does not trust its caller.
+
+**Moving the drive never overwrites, never eats itself, and never deletes a
+folder it did not make.** Three separate ways this went wrong the moment the
+destination stopped being a `PocketShare/` folder the app composed itself:
+
+- The destination may already hold a `report.pdf` of its own, so a name that
+  is taken gets `report (1).pdf` beside it instead of being replaced.
+- A destination *inside* the current folder is refused outright — copying
+  inwards and then deleting the source would delete the copies with it.
+- The source is only deleted when the app created it. Point the drive at
+  `DCIM/Camera` and the old code would, on the next "Change folder", empty
+  that folder and `rm -rf` it. A folder the user picked is copied out of and
+  left exactly as found, and the app says so rather than leaving them to
+  discover it. A flag stored beside the path records which kind it is, and
+  the rules run again over the *source* before any delete, so a path that
+  reached storage without passing them can never become one.
+
+`FolderMigration` is split out of `DriveLocation` precisely so all of this is
+testable on a laptop.
+
+**There is no `file://` fallback for opening a folder.** Android specifies no
+intent for "show me this folder", so `openFolder` tries the documents-provider
+URI and then the file manager's front door. The obvious middle step — a
+`file://` URI with `resource/folder` — is absent on purpose: `minSdk` is 24,
+and handing a file URI to another app throws `FileUriExposedException` on
+every device this runs on, from `startActivity`, before anything resolves. It
+would have crashed the app instead of falling through to the next attempt.
+
+**Tapping a file hands it over with a `content://` URI.** A `file://` URI
+crossing an app boundary throws `FileUriExposedException` on Android 7+, so a
+`FileProvider` issues a read-only grant for the one file. Its paths are
+scoped to `/storage/`, not `/`: nothing under `/data` — the app's databases,
+the Keystore-backed secure storage — has any business being shareable.
+
+**Sharing sends the address and nothing else.** Not the login, not the tunnel
+token. A shared message gets forwarded, and a forwarded address is useless
+without the password handed over separately. The same goes for an invite: a
+code buys a guest an address of their own, never a way into this drive.
+
+**Share is a native intent, not a plugin.** `ACTION_SEND` is a dozen lines of
+Kotlin, and this is an app whose whole claim is that nothing sits in the
+middle — one fewer third-party dependency with an upload path is worth more
+than the convenience.
+
 **The drive's folder is the user's, and they are told where it is.** It
 defaults to `<volume>/PocketShare` — a normal folder, visible in the phone's
 own Files app, which survives uninstalling the app. `Android/data/<pkg>/` is
@@ -212,7 +281,11 @@ The server suite exercises auth, path traversal, chunked upload with a
 deliberately skipped chunk, range requests, non-ASCII filenames and
 trash/restore against a real server on a real port. The Cloudflare suite runs
 against a fake that can be told to fail individual endpoints, covering invalid
-and under-scoped tokens, duplicate tunnel names, and rollback.
+and under-scoped tokens, duplicate tunnel names, and rollback. The file suite
+moves real directories in a temp folder, including the two cases that lose
+data if they are wrong: a name collision in the destination, and a destination
+inside the source. The widget tests stub the platform channels and render both
+tabs, checking among other things that the share text carries no credential.
 
 ## Known gaps
 
@@ -222,6 +295,13 @@ and under-scoped tokens, duplicate tunnel names, and rollback.
 - Release builds are signed with the debug key. Replace before distributing.
 - The web UI cannot empty the trash or move a file between folders, though the
   server supports both.
+- The in-app Files tab is read-only. Uploading, deleting and restoring live in
+  the web UI, which already has the whole story; a second half-built copy of
+  it on the phone would be worse than one complete one in the browser.
+- The new tabs, folder picker and share sheet have been exercised by the
+  widget tests and a release build, but not yet on a physical phone.
+- Moving the drive out of a folder the user picked leaves a full copy behind,
+  by design. The alternative is deleting folders the app did not create.
 - Folder navigation does not change the URL, so a folder cannot be linked and
   the browser's back button leaves the app instead of going up.
 - cloudflared runs as a child process, which Android 12+ treats as a *phantom

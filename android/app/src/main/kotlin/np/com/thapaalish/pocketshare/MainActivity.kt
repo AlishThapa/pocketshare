@@ -1,15 +1,20 @@
 package np.com.thapaalish.pocketshare
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.PowerManager
 import android.os.StatFs
+import android.provider.DocumentsContract
 import android.provider.Settings
+import android.webkit.MimeTypeMap
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 class MainActivity : FlutterActivity() {
 
@@ -55,6 +60,29 @@ class MainActivity : FlutterActivity() {
                     // Asking first keeps the prompt off phones it cannot help.
                     "hasAutostartSettings" ->
                         result.success(autostartIntent() != null)
+
+                    // Hands the address to whatever the user shares with.
+                    // Done natively rather than with a share plugin: one
+                    // fewer third-party dependency in an app whose whole
+                    // point is that nothing sits in the middle.
+                    "shareText" -> {
+                        val text = call.argument<String>("text").orEmpty()
+                        val subject = call.argument<String>("subject")
+                        result.success(shareText(text, subject))
+                    }
+
+                    // Opens a folder in whatever file manager the phone has.
+                    // There is no guaranteed intent for this, so it is a
+                    // chain of attempts and an honest false at the end.
+                    "openFolder" -> {
+                        val path = call.argument<String>("path").orEmpty()
+                        result.success(openFolder(path))
+                    }
+
+                    "openFile" -> {
+                        val path = call.argument<String>("path").orEmpty()
+                        result.success(openFile(path))
+                    }
 
                     else -> result.notImplemented()
                 }
@@ -175,6 +203,134 @@ class MainActivity : FlutterActivity() {
             startActivity(intent)
             true
         } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun shareText(text: String, subject: String?): Boolean {
+        if (text.isEmpty()) return false
+        val intent = Intent(Intent.ACTION_SEND)
+            .setType("text/plain")
+            .putExtra(Intent.EXTRA_TEXT, text)
+        if (!subject.isNullOrEmpty()) intent.putExtra(Intent.EXTRA_SUBJECT, subject)
+        return try {
+            startActivity(Intent.createChooser(intent, null))
+            true
+        } catch (_: ActivityNotFoundException) {
+            false
+        }
+    }
+
+    /**
+     * Opens [path] in a file manager.
+     *
+     * Android has never specified an intent for "show me this folder", so
+     * this tries the documents-provider URI that DocumentsUI understands,
+     * then a plain folder view, then the file manager's own front door.
+     */
+    private fun openFolder(path: String): Boolean {
+        val dir = File(path)
+        if (!dir.isDirectory) return false
+
+        for (intent in folderIntents(dir)) {
+            try {
+                startActivity(intent)
+                return true
+            } catch (_: Exception) {
+                // Every way of saying "no": no activity, a refused grant, or
+                // a ROM that throws something of its own. The point of this
+                // list is to try the next one, never to take the app down
+                // because a file manager was fussy.
+                continue
+            }
+        }
+        return false
+    }
+
+    private fun folderIntents(dir: File): List<Intent> {
+        val intents = mutableListOf<Intent>()
+
+        documentId(dir)?.let { id ->
+            val uri = DocumentsContract.buildDocumentUri(
+                "com.android.externalstorage.documents",
+                id,
+            )
+            intents.add(
+                Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, DocumentsContract.Document.MIME_TYPE_DIR)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+            )
+        }
+
+        // No file:// fallback here. minSdk is 24, and handing a file URI to
+        // another app throws FileUriExposedException on exactly every device
+        // this app runs on — from startActivity, before anything resolves,
+        // so it would crash rather than fall through.
+
+        // Last resort: the file manager, wherever it lands.
+        intents.add(
+            Intent(Intent.ACTION_VIEW)
+                .setType(DocumentsContract.Document.MIME_TYPE_DIR),
+        )
+
+        return intents
+    }
+
+    /**
+     * `primary:Some/Folder` for shared storage, or `<uuid>:Some/Folder` for a
+     * card. Null when the path is not on a volume this can name.
+     */
+    private fun documentId(dir: File): String? {
+        for (volume in getExternalFilesDirs(null)) {
+            if (volume == null) continue
+            val index = volume.absolutePath.indexOf("/Android/data/")
+            if (index < 0) continue
+            val root = volume.absolutePath.substring(0, index)
+            if (!dir.absolutePath.startsWith("$root/") && dir.absolutePath != root) {
+                continue
+            }
+
+            val relative = dir.absolutePath.removePrefix(root).trimStart('/')
+            val isPrimary = try {
+                !Environment.isExternalStorageRemovable(volume)
+            } catch (_: Exception) {
+                true
+            }
+            val name = if (isPrimary) "primary" else root.substringAfterLast('/')
+            return "$name:$relative"
+        }
+        return null
+    }
+
+    /**
+     * Hands a single file to whatever app can display it.
+     *
+     * The URI comes from FileProvider rather than Uri.fromFile: a file:// URI
+     * crossing an app boundary throws FileUriExposedException on Android 7+,
+     * and the grant here is read-only and scoped to the one file.
+     */
+    private fun openFile(path: String): Boolean {
+        val file = File(path)
+        if (!file.isFile) return false
+
+        val uri = try {
+            FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        } catch (_: IllegalArgumentException) {
+            return false
+        }
+
+        val extension = file.extension.lowercase()
+        val type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+            ?: "*/*"
+
+        return try {
+            startActivity(
+                Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, type)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+            )
+            true
+        } catch (_: ActivityNotFoundException) {
             false
         }
     }

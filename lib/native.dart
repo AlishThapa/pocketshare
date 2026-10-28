@@ -87,4 +87,22 @@ class Native {
   /// Android, Samsung and Pixel, where the prompt would be noise.
   static Future<bool> hasAutostartSettings() async =>
       await _channel.invokeMethod<bool>('hasAutostartSettings') ?? false;
+
+  /// Hands [text] to the phone's share sheet. False when nothing on the
+  /// device can receive it.
+  static Future<bool> shareText(String text, {String? subject}) async =>
+      await _channel.invokeMethod<bool>('shareText', {
+        'text': text,
+        'subject': subject,
+      }) ??
+      false;
+
+  /// Opens [path] in the phone's file manager. Android specifies no intent
+  /// for this, so false is a real outcome and the UI has to cope with it.
+  static Future<bool> openFolder(String path) async =>
+      await _channel.invokeMethod<bool>('openFolder', {'path': path}) ?? false;
+
+  /// Opens one file in whatever app can display it.
+  static Future<bool> openFile(String path) async =>
+      await _channel.invokeMethod<bool>('openFile', {'path': path}) ?? false;
 }

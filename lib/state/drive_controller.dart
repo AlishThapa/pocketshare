@@ -19,6 +19,8 @@ import '../server/auth.dart';
 import '../server/store.dart';
 import '../service/drive_task.dart';
 import '../storage/drive_location.dart';
+import '../storage/folder_rules.dart';
+import '../storage/migrate.dart';
 import '../tunnel/cloudflared.dart';
 import '../tunnel/provision.dart';
 
@@ -127,25 +129,54 @@ class DriveController extends ChangeNotifier {
   /// Volumes the user can move the drive to. UI isolate only.
   Future<List<StorageVolume>> storageVolumes() => DriveLocation.volumes();
 
-  /// Moves the drive to [volume], carrying existing files across.
+  /// The storage roots this device reports, for validating a chosen folder.
+  Future<List<String>> volumeRoots() async =>
+      (await storageVolumes()).map((v) => v.path).toList();
+
+  /// Moves the drive to any folder the user picked.
   ///
   /// The service is stopped first: it holds the SQLite handle and is actively
   /// serving from the old path, and copying files out from under it would race
   /// any in-flight upload.
-  Future<int> changeStorage(StorageVolume volume) async {
+  ///
+  /// The path is re-checked here even though the picker already checked it.
+  /// This is the one call that decides what the whole internet-facing drive
+  /// serves, so it does not rely on its caller having been careful.
+  Future<MoveResult> changeStorageToPath(String path) async {
+    final roots = await volumeRoots();
+    final problem = FolderRules.problem(path, roots);
+    if (problem != null) throw FileSystemException(problem, path);
+
     final wasRunning = await FlutterForegroundTask.isRunningService;
     if (wasRunning) await stopDrive();
 
     final from = Directory(driveRootPath ?? (await DriveLocation.resolve()).path);
-    final to = Directory(volume.drivePath);
+    final to = Directory(path);
 
-    final moved = await DriveLocation.migrate(from, to);
-    await DriveLocation.save(to.path);
+    // The old folder is only deleted if this app made it. Once the user can
+    // point the drive at Download or DCIM/Camera, "move the drive" must not
+    // mean "and delete the folder it was living in". The second condition is
+    // a backstop: a path that reached storage without passing the rules
+    // never becomes the target of a recursive delete.
+    final appMade = await DriveLocation.rootIsAppCreated() &&
+        FolderRules.problem(from.path, roots) == null;
+
+    final MoveResult result;
+    try {
+      result = await DriveLocation.migrate(from, to, deleteSource: appMade);
+    } catch (_) {
+      // The move failed, so the drive still belongs where it was. Leaving it
+      // stopped would turn a refused folder into an address that went dark.
+      if (wasRunning) await startDrive();
+      rethrow;
+    }
+
+    await DriveLocation.save(to.path, appCreated: false);
     driveRootPath = to.path;
     notifyListeners();
 
     if (wasRunning) await startDrive();
-    return moved;
+    return result;
   }
 
   Future<void> markAutostartDone() async {

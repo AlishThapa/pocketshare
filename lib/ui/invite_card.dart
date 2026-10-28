@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../invites/invite_store.dart';
+import '../native.dart';
 import '../state/drive_controller.dart';
+import 'widgets.dart';
 
 /// Invite codes, shown only on a host.
 ///
@@ -23,53 +25,39 @@ class InviteCard extends StatelessWidget {
     final scheme = theme.colorScheme;
     final hostname = c.inviteHostname;
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 16),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.person_add_alt, size: 20, color: scheme.primary),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text('Invite someone',
-                      style: theme.textTheme.titleMedium),
-                ),
-              ],
+    return Panel(
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'They install PocketShare, paste the code, and get their own '
+            'address on your domain. Their files stay on their phone.',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: scheme.onSurfaceVariant, height: 1.35),
+          ),
+          const SizedBox(height: 14),
+          if (c.invites.isEmpty)
+            Text('No codes yet.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: scheme.onSurfaceVariant))
+          else
+            ...c.invites.map((invite) => _InviteRow(
+                  invite: invite,
+                  hostname: hostname,
+                  onRevoke: () => c.revokeInvite(invite.code),
+                  onRemove: () => c.removeInvite(invite.code),
+                )),
+          const SizedBox(height: 4),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('New code'),
+              onPressed: () => _newCode(context, c),
             ),
-            const SizedBox(height: 4),
-            Text(
-              'They install PocketShare, paste the code, and get their own '
-              'address on your domain. Their files stay on their phone.',
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: scheme.onSurfaceVariant),
-            ),
-            const SizedBox(height: 12),
-            if (c.invites.isEmpty)
-              Text('No codes yet.',
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(color: scheme.onSurfaceVariant))
-            else
-              ...c.invites.map((invite) => _InviteRow(
-                    invite: invite,
-                    hostname: hostname,
-                    onRevoke: () => c.revokeInvite(invite.code),
-                    onRemove: () => c.removeInvite(invite.code),
-                  )),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                icon: const Icon(Icons.add, size: 18),
-                label: const Text('New code'),
-                onPressed: () => _newCode(context, c),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -115,7 +103,9 @@ class _InviteRow extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
       decoration: BoxDecoration(
-        color: dead ? scheme.surfaceContainerHighest : scheme.surface,
+        color: dead
+            ? scheme.surfaceContainerHighest
+            : scheme.surface,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: scheme.outlineVariant),
       ),
@@ -161,9 +151,14 @@ class _InviteRow extends StatelessWidget {
             ),
           PopupMenuButton<String>(
             tooltip: 'More',
-            onSelected: (value) =>
-                value == 'revoke' ? onRevoke() : onRemove(),
+            onSelected: (value) => switch (value) {
+              'share' => _share(context),
+              'revoke' => onRevoke(),
+              _ => onRemove(),
+            },
             itemBuilder: (_) => [
+              if (!dead && hostname != null)
+                const PopupMenuItem(value: 'share', child: Text('Share invite')),
               if (!dead)
                 const PopupMenuItem(value: 'revoke', child: Text('Cancel code')),
               const PopupMenuItem(value: 'remove', child: Text('Remove')),
@@ -171,6 +166,26 @@ class _InviteRow extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+extension on _InviteRow {
+  /// Sends the code and the address it is redeemed against, which is all a
+  /// guest's phone needs. Nothing here signs anyone in: a code buys an
+  /// address of their own, not access to this drive.
+  Future<void> _share(BuildContext context) async {
+    final host = hostname;
+    if (host == null) return;
+
+    final sent = await Native.shareText(
+      'Join my PocketShare: install the app and paste this code.\n\n'
+      '${invite.shareString(host)}',
+      subject: 'PocketShare invite',
+    );
+    if (!context.mounted || sent) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Nothing on this phone can share text.')),
     );
   }
 }
