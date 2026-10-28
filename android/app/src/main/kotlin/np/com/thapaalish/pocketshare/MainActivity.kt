@@ -40,6 +40,8 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
 
+                    "androidId" -> result.success(androidId())
+
                     "storageVolumes" -> result.success(storageVolumes())
 
                     "hasAllFilesAccess" -> result.success(hasAllFilesAccess())
@@ -148,6 +150,26 @@ class MainActivity : FlutterActivity() {
             )
         }
         return volumes
+    }
+
+    /**
+     * Settings.Secure.ANDROID_ID.
+     *
+     * Survives uninstalling and reinstalling this app, which is the whole
+     * point: it is what lets a phone prove it is the same phone and reclaim
+     * the address it already had. Since Android 8 the value is scoped to the
+     * app's signing key, so it is not a cross-app identifier, and it changes
+     * on a factory reset or a change of signing key.
+     *
+     * Returned raw and hashed on the Dart side before it goes anywhere, so
+     * the value itself never leaves the phone.
+     */
+    private fun androidId(): String? {
+        val id = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+        // Some pre-8.0 ROMs return a famous hard-coded value shared across
+        // every device of that model, which would collide between phones.
+        if (id.isNullOrBlank() || id == "9774d56d682e549c") return null
+        return id
     }
 
     private fun hasAllFilesAccess(): Boolean =

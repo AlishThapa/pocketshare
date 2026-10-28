@@ -72,6 +72,18 @@ class Native {
     ];
   }
 
+  /// Settings.Secure.ANDROID_ID, or null where it cannot be trusted. Hashed
+  /// before use — see [Provisioner.deviceId].
+  static Future<String?> androidId() async {
+    try {
+      return await _channel.invokeMethod<String>('androidId');
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   static Future<bool> hasAllFilesAccess() async =>
       await _channel.invokeMethod<bool>('hasAllFilesAccess') ?? false;
 

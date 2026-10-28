@@ -40,6 +40,9 @@ export default {
       if (request.method === 'POST' && url.pathname === '/claim') {
         return await claim(request, env);
       }
+      if (request.method === 'POST' && url.pathname === '/rebind') {
+        return await rebind(request, env);
+      }
       return json({ error: 'not found' }, 404);
     } catch (err) {
       // Never surface Cloudflare API internals to the app.
@@ -154,6 +157,51 @@ async function claim(request, env) {
 
   await consumeInvite(env, inviteCode);
   return json({ hostname, tunnelToken: tunnel.token, reused: false });
+}
+
+/**
+ * Moves a claim onto a new device id, proven by knowing the current one.
+ *
+ * A phone that claimed its name before device ids were derived from the
+ * hardware holds a random one that uninstalling wipes, which would strand
+ * the name here with no way for its owner to take it back. This lets that
+ * phone hand the claim to its stable id while it still knows both.
+ *
+ * Knowing the current device id is the authorisation. That is not a weakening:
+ * the same value already lets its holder re-claim the name outright, so this
+ * grants nothing new. It touches no Cloudflare resource — the tunnel, the
+ * ingress and the DNS record are all unchanged — so the worst a stolen id can
+ * do here is what it could already do.
+ */
+async function rebind(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const name = String(body.name || '').toLowerCase().trim();
+  const deviceId = String(body.deviceId || '').trim();
+  const newDeviceId = String(body.newDeviceId || '').trim();
+
+  if (!name || !deviceId || !newDeviceId) {
+    return json({ error: 'missing fields' }, 400);
+  }
+  if (newDeviceId.length < 8) return json({ error: 'bad device id' }, 400);
+
+  const existing = await env.CLAIMS.get(`name:${name}`, 'json');
+  if (!existing) return json({ error: 'no such claim' }, 404);
+
+  // Same answer for a wrong id and a missing claim would be nicer, but the
+  // 404 above already distinguishes them and neither reveals anything the
+  // caller could not learn from /available.
+  if (existing.deviceId !== deviceId) {
+    return json({ error: 'that claim belongs to another device' }, 403);
+  }
+
+  // Already done — a retry after a reply that never arrived.
+  if (existing.deviceId === newDeviceId) return json({ ok: true });
+
+  await env.CLAIMS.put(
+    `name:${name}`,
+    JSON.stringify({ ...existing, deviceId: newDeviceId, reboundAt: Date.now() }),
+  );
+  return json({ ok: true });
 }
 
 function validateName(name) {

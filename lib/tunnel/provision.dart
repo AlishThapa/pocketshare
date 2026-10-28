@@ -4,6 +4,9 @@ import 'dart:math';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import '../native.dart';
+import 'device_id.dart';
+
 /// Client for the provisioning Worker.
 ///
 /// The app never sees a Cloudflare credential: it sends an invite code and a
@@ -27,18 +30,82 @@ class Provisioner {
   static const _kTunnelToken = 'tunnel_token';
   static const _kHostname = 'hostname';
 
-  /// Stable per-install id. Lets the same phone re-claim its own name after a
+  /// Stable id for this phone. Lets it re-claim its own name after a
   /// reinstall instead of being told the name is taken.
+  ///
+  /// Derived from ANDROID_ID, which survives uninstalling, and hashed so the
+  /// raw value never leaves the phone — see [DeviceId]. Stored as well as
+  /// derived, because an install that predates this change has a random id
+  /// the Worker already knows — changing it under a live claim would lock
+  /// the phone out of its own name. [stableId] and [rebind] are how such an
+  /// install moves across deliberately.
   Future<String> deviceId() async {
     final existing = await _storage.read(key: _kDeviceId);
     if (existing != null && existing.length >= 8) return existing;
 
-    final rng = Random.secure();
-    final id = base64Url
-        .encode(List<int>.generate(24, (_) => rng.nextInt(256)))
-        .replaceAll('=', '');
+    final id = await stableId() ?? _randomId();
     await _storage.write(key: _kDeviceId, value: id);
     return id;
+  }
+
+  /// The id this phone derives from its hardware, or null when ANDROID_ID is
+  /// unavailable or known-untrustworthy. Null means reinstall recovery
+  /// cannot work on this device, not that anything is broken.
+  Future<String?> stableId() async {
+    final raw = await Native.androidId();
+    if (!DeviceId.usable(raw)) return null;
+    return DeviceId.fromAndroidId(raw!);
+  }
+
+  static String _randomId() {
+    final rng = Random.secure();
+    return base64Url
+        .encode(List<int>.generate(24, (_) => rng.nextInt(256)))
+        .replaceAll('=', '');
+  }
+
+  /// Moves an existing claim from the id it was made with onto this phone's
+  /// derived id, so the next uninstall does not strand it.
+  ///
+  /// Only ever runs for an install that claimed its name before derived ids
+  /// existed. Authorised by the current id, which is the same secret that
+  /// already authorises re-claiming the name, so this grants nothing that
+  /// possession of the id did not already grant.
+  ///
+  /// Best effort and silent: it runs at startup, the phone may be offline,
+  /// and nothing about the running drive depends on it.
+  Future<bool> adoptStableId(String hostname) async {
+    final target = await stableId();
+    if (target == null) return false;
+
+    final current = await _storage.read(key: _kDeviceId);
+    if (current == null || current == target) return false;
+
+    final name = hostname.split('.').first;
+    if (name.isEmpty) return false;
+
+    try {
+      final res = await _http
+          .post(
+            Uri.parse('$endpoint/rebind'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'name': name,
+              'deviceId': current,
+              'newDeviceId': target,
+            }),
+          )
+          .timeout(const Duration(seconds: 20));
+
+      // Only record the new id once the Worker has accepted it. Storing it
+      // first would leave the phone holding an id the Worker does not know,
+      // which is the exact lockout this is meant to prevent.
+      if (res.statusCode != 200) return false;
+      await _storage.write(key: _kDeviceId, value: target);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Checks an invite code and learns which domain it is for.

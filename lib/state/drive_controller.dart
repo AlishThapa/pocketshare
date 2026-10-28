@@ -112,6 +112,16 @@ class DriveController extends ChangeNotifier {
     claim = await provisioner.saved();
     isHost = await Secrets.isHost;
 
+    // An install that claimed its name before device ids were derived from
+    // the hardware still holds a random one, which the next uninstall would
+    // wipe and strand the name. Move it across now, while the phone still
+    // knows the id the Worker has on file. Unawaited: it is a network call
+    // at startup and nothing on screen depends on it.
+    final existing = claim;
+    if (existing != null && !isHost) {
+      unawaited(provisioner.adoptStableId(existing.hostname));
+    }
+
     if (claim == null) {
       stage = SetupStage.choosePath;
     } else if (!_auth!.hasAccount) {

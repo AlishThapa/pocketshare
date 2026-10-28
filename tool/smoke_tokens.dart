@@ -1,5 +1,6 @@
 // Checks the pure token helpers. Run: dart run tool/smoke_tokens.dart
 import 'package:pocketshare/storage/token_format.dart';
+import 'package:pocketshare/tunnel/device_id.dart';
 
 int passed = 0, failed = 0;
 
@@ -58,6 +59,37 @@ void main() {
   check('spots a tunnel token', TokenFormat.looksLikeTunnelToken(tunnel));
   check('does not call an API token a tunnel token',
       !TokenFormat.looksLikeTunnelToken(api));
+
+  print('\n-- device ids --');
+  const a = 'cafebabe12345678';
+  const b = 'cafebabe12345679';
+
+  check('the same phone derives the same id',
+      DeviceId.fromAndroidId(a) == DeviceId.fromAndroidId(a));
+  check('a different phone derives a different one',
+      DeviceId.fromAndroidId(a) != DeviceId.fromAndroidId(b));
+
+  // The raw value outlives the app, so it is worth not handing out: the
+  // Worker has no use for it beyond telling phones apart.
+  check('the raw ANDROID_ID is not recoverable from it',
+      !DeviceId.fromAndroidId(a).contains(a));
+  check('nor is it the bare hash of the id alone',
+      DeviceId.fromAndroidId(a) !=
+          DeviceId.fromAndroidId('${DeviceId.salt}:$a'));
+  check('it is marked as derived', DeviceId.fromAndroidId(a).startsWith('a'));
+  check('it is long enough for the Worker to accept',
+      DeviceId.fromAndroidId(a).length >= 8);
+  check('it is url-safe',
+      RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(DeviceId.fromAndroidId(a)));
+
+  // Several phones of one model sharing an id would let any of them take
+  // another's address.
+  check('the famous broken ANDROID_ID is refused',
+      !DeviceId.usable('9774d56d682e549c'));
+  check('a missing id is refused', !DeviceId.usable(null));
+  check('an empty id is refused', !DeviceId.usable(''));
+  check('a blank id is refused', !DeviceId.usable('   '));
+  check('a real id is accepted', DeviceId.usable(a));
 
   print('\n$passed passed, $failed failed\n');
   if (failed > 0) throw StateError('$failed checks failed');

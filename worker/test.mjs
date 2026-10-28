@@ -130,6 +130,63 @@ console.log('\n-- /available is gated on the code --');
   check('the Worker cannot be claimed out from under itself', out.available === false);
 }
 
+console.log('\n-- /rebind --');
+{
+  const post = (e, path, body) =>
+    worker.fetch(new Request(`https://provision.example${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }), e);
+
+  const seed = () => env({
+    'name:tests': { deviceId: 'old-random-id', tunnelId: 'tun-7', inviteCode: 'ABC123' },
+  });
+
+  let e = seed();
+  let [status, out] = await body(await post(e, '/rebind', {
+    name: 'tests', deviceId: 'old-random-id', newDeviceId: 'a-derived-stable-id',
+  }));
+  check('a claim moves to the new id', status === 200 && out.ok === true, `${status}`);
+
+  const after = JSON.parse(e.CLAIMS.store.get('name:tests'));
+  check('the new id is stored', after.deviceId === 'a-derived-stable-id', after.deviceId);
+  check('the tunnel is untouched', after.tunnelId === 'tun-7', after.tunnelId);
+
+  // The point of the whole exercise: a reinstall arrives with the derived
+  // id and must be recognised as the same phone.
+  [status, out] = await body(await post(e, '/rebind', {
+    name: 'tests', deviceId: 'a-derived-stable-id', newDeviceId: 'a-derived-stable-id',
+  }));
+  check('repeating it is harmless', status === 200 && out.ok === true, `${status}`);
+
+  e = seed();
+  [status, out] = await body(await post(e, '/rebind', {
+    name: 'tests', deviceId: 'some-other-phone', newDeviceId: 'attacker-id',
+  }));
+  check('another device cannot take the claim', status === 403, `${status}`);
+  check('and the claim is unchanged',
+    JSON.parse(e.CLAIMS.store.get('name:tests')).deviceId === 'old-random-id');
+
+  e = seed();
+  [status] = await body(await post(e, '/rebind', {
+    name: 'nosuchname', deviceId: 'old-random-id', newDeviceId: 'x'.repeat(10),
+  }));
+  check('an unknown name is a 404', status === 404, `${status}`);
+
+  e = seed();
+  [status] = await body(await post(e, '/rebind', {
+    name: 'tests', deviceId: 'old-random-id', newDeviceId: 'short',
+  }));
+  check('a too-short new id is refused', status === 400, `${status}`);
+  check('refusing leaves the claim alone',
+    JSON.parse(e.CLAIMS.store.get('name:tests')).deviceId === 'old-random-id');
+
+  e = seed();
+  [status] = await body(await post(e, '/rebind', { name: 'tests' }));
+  check('missing fields are refused', status === 400, `${status}`);
+}
+
 console.log('\n-- unknown routes --');
 {
   const [status] = await body(await call(env({}), '/nope'));

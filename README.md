@@ -299,13 +299,16 @@ that keeps `/available` from answering without a good invite code.
 - **Guests cannot redeem a code yet.** The host's `/provision/*` endpoints are
   not built. Everything behind them is: the API client, the provisioner with
   rollback, the name rules and the invite store.
-- **Uninstalling forgets the drive.** The claim, the login, invite codes and
-  the Cloudflare token all live in app storage, which Android wipes, and
-  `allowBackup="false"` means there is no backup to restore from. Files under
-  `/storage/emulated/0/PocketShare` survive. Re-claiming the same name after a
-  reinstall works — the dormant tunnel is adopted — but the Cloudflare token
-  has to be entered again and a new login created. Restoring a claim without
-  putting it somewhere Google can read is not solved.
+- **Uninstalling forgets the drive, but not the name.** The claim, the login,
+  invite codes and the Cloudflare token all live in app storage, which Android
+  wipes, and `allowBackup="false"` means there is no backup to restore from.
+  Files under `/storage/emulated/0/PocketShare` survive. The address comes
+  back either way: a guest is recognised by a device id derived from
+  ANDROID_ID, which outlives the app, and a host re-claiming its own name
+  adopts the tunnel still standing on the account. What does not come back is
+  the login and the invite codes, and a host has to enter its Cloudflare token
+  again. Restoring those without putting them somewhere Google can read is not
+  solved.
 - Release builds are signed with the debug key. Replace before distributing.
 - The web UI cannot empty the trash or move a file between folders, though the
   server supports both.
