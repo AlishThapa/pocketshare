@@ -17,6 +17,36 @@ class FolderRules {
     'Android', // app sandboxes, including this app's own
   };
 
+  /// Whether a folder sitting directly under a volume root is one the drive
+  /// may never use. The picker hides these rather than offering a door that
+  /// is always locked — and in `Android/data`'s case, one that Android will
+  /// not even let it read the inside of.
+  static bool isOffLimitsName(String name) => _offLimits.contains(name);
+
+  /// True when [path] is inside app-sandbox storage.
+  ///
+  /// The picker needs this separately from [problem]: a folder it must not
+  /// *start* in, because the way back out runs through `Android/data`, which
+  /// is unreadable even with all-files access, so an up-by-one walk hits a
+  /// wall instead of reaching the volume root.
+  static bool isAppPrivate(String path, List<String> volumeRoots) {
+    final norm = p.normalize(path);
+    final root = _owningRoot(norm, volumeRoots);
+    if (root == null || p.equals(norm, root)) return false;
+    return _offLimits.contains(p.split(p.relative(norm, from: root)).first);
+  }
+
+  /// The volume [norm] sits on — the longest matching root, so a volume
+  /// mounted inside another is attributed to the inner one.
+  static String? _owningRoot(String norm, List<String> volumeRoots) =>
+      volumeRoots
+          .map(p.normalize)
+          .where((r) => p.equals(norm, r) || p.isWithin(r, norm))
+          .fold<String?>(
+              null,
+              (longest, r) =>
+                  longest == null || r.length > longest.length ? r : longest);
+
   /// Returns a human explanation when [path] cannot be the drive's folder, or
   /// null when it can.
   ///
@@ -34,11 +64,7 @@ class FolderRules {
       return 'That path is not a plain folder path.';
     }
 
-    final root = volumeRoots
-        .map(p.normalize)
-        .where((r) => p.equals(norm, r) || p.isWithin(r, norm))
-        .fold<String?>(null, (longest, r) =>
-            longest == null || r.length > longest.length ? r : longest);
+    final root = _owningRoot(norm, volumeRoots);
 
     if (root == null) {
       return 'That folder is not on the phone\'s storage. Pick somewhere '

@@ -309,6 +309,10 @@ that keeps `/available` from answering without a good invite code.
 - Release builds are signed with the debug key. Replace before distributing.
 - The web UI cannot empty the trash or move a file between folders, though the
   server supports both.
+- The drive only lands in app-private storage when all-files access was
+  missing at first run. Granting it later does not move the drive on its own;
+  the Files tab offers the move as one tap instead, because silently
+  relocating someone's files is not something to do behind their back.
 - The in-app Files tab is read-only. Uploading, deleting and restoring live in
   the web UI, which already has the whole story; a second half-built copy of
   it on the phone would be worse than one complete one in the browser.

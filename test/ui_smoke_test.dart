@@ -19,6 +19,8 @@ import 'package:pocketshare/ui/claim_screen.dart';
 import 'package:pocketshare/ui/drive_tab.dart';
 import 'package:pocketshare/files/listing.dart';
 import 'package:pocketshare/ui/files_tab.dart';
+import 'package:pocketshare/ui/folder_picker.dart';
+import 'package:pocketshare/storage/drive_location.dart';
 import 'package:pocketshare/ui/home_screen.dart';
 
 late Directory root;
@@ -265,6 +267,111 @@ void main() {
 
     final field = tester.widget<EditableText>(find.byType(EditableText));
     expect(field.controller.text, 'ABC123');
+  });
+
+  // --- the folder picker ---------------------------------------------------
+
+  /// Opens the picker over a host screen, the way the Files tab does.
+  Future<void> showPicker(
+    WidgetTester tester, {
+    String? current,
+    List<StorageVolume>? volumes,
+  }) async {
+    await tester.pumpWidget(wrap(Builder(
+      builder: (context) => Scaffold(
+        body: Center(
+          child: FilledButton(
+            onPressed: () => pickFolder(
+              context,
+              volumes: volumes ??
+                  [
+                    StorageVolume(
+                      path: root.path,
+                      removable: false,
+                      totalBytes: 64,
+                      freeBytes: 12,
+                    ),
+                  ],
+              current: current,
+              read: readSync,
+            ),
+            child: const Text('open'),
+          ),
+        ),
+      ),
+    )));
+    await tester.tap(find.text('open'));
+    await settleIO(tester);
+    await settleIO(tester);
+  }
+
+  testWidgets('the picker offers a way up out of an empty folder',
+      (tester) async {
+    // The dead end as reported: descend into something empty and the only
+    // way back was a list row that an empty list does not draw.
+    Directory(p.join(root.path, 'Docs')).createSync();
+    await showPicker(tester);
+
+    await tester.tap(find.text('Docs'));
+    await settleIO(tester);
+
+    expect(find.text('No folders in here'), findsOneWidget);
+    expect(find.text('Up one level'), findsOneWidget);
+
+    await tester.tap(find.text('Up one level'));
+    await settleIO(tester);
+    expect(find.text('Docs'), findsOneWidget);
+  });
+
+  testWidgets('the picker does not open inside app-private storage',
+      (tester) async {
+    // Where the drive sits when all-files access was missing at first run.
+    final private = Directory(
+      p.join(root.path, 'Android', 'data', 'np.com.thapaalish.pocketshare',
+          'files', 'PocketShare'),
+    )..createSync(recursive: true);
+    Directory(p.join(root.path, 'Docs')).createSync();
+
+    await showPicker(tester, current: private.path);
+
+    // It must land on the volume root, not two levels inside Android/data
+    // whose parent cannot be listed.
+    expect(find.text('Docs'), findsOneWidget);
+    expect(find.textContaining('Android/data'), findsNothing);
+  });
+
+  testWidgets('the picker hides folders the rules can never accept',
+      (tester) async {
+    Directory(p.join(root.path, 'Android')).createSync();
+    Directory(p.join(root.path, 'Docs')).createSync();
+
+    await showPicker(tester);
+
+    expect(find.text('Docs'), findsOneWidget);
+    expect(find.text('Android'), findsNothing);
+  });
+
+  testWidgets('the volume root itself cannot be used', (tester) async {
+    Directory(p.join(root.path, 'Docs')).createSync();
+    await showPicker(tester);
+
+    expect(
+      tester
+          .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Use this folder'))
+          .onPressed,
+      isNull,
+    );
+
+    await tester.tap(find.text('Docs'));
+    await settleIO(tester);
+    expect(
+      tester
+          .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Use this folder'))
+          .onPressed,
+      isNotNull,
+    );
   });
 
   testWidgets('both tabs are reachable from the home screen', (tester) async {

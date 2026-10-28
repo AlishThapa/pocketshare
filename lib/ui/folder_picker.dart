@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 
 import '../files/listing.dart';
 import '../storage/drive_location.dart';
+import 'files_tab.dart' show DirectoryReader;
 import '../storage/folder_rules.dart';
 import 'widgets.dart';
 
@@ -19,20 +20,30 @@ Future<String?> pickFolder(
   BuildContext context, {
   required List<StorageVolume> volumes,
   String? current,
+  DirectoryReader read = Listing.read,
 }) {
   return Navigator.of(context).push<String>(
     MaterialPageRoute(
       fullscreenDialog: true,
-      builder: (_) => _FolderPicker(volumes: volumes, current: current),
+      builder: (_) =>
+          _FolderPicker(volumes: volumes, current: current, read: read),
     ),
   );
 }
 
 class _FolderPicker extends StatefulWidget {
-  const _FolderPicker({required this.volumes, this.current});
+  const _FolderPicker({
+    required this.volumes,
+    required this.read,
+    this.current,
+  });
 
   final List<StorageVolume> volumes;
   final String? current;
+
+  /// Injectable so a widget test can drive this screen; real async file I/O
+  /// never completes under the fake clock a widget test runs on.
+  final DirectoryReader read;
 
   @override
   State<_FolderPicker> createState() => _FolderPickerState();
@@ -48,18 +59,30 @@ class _FolderPickerState extends State<_FolderPicker> {
 
   List<String> get _roots => widget.volumes.map((v) => v.path).toList();
 
+  /// Where to open when there is nowhere better: the one volume, or the
+  /// volume list when the phone has more than one.
+  String? get _defaultRoot =>
+      widget.volumes.length == 1 ? widget.volumes.single.path : null;
+
   @override
   void initState() {
     super.initState();
 
-    // Start where the drive already is, so "change folder" opens next to the
-    // current one rather than at the top of the card.
+    // Start next to the folder the drive already uses, so "change folder"
+    // opens where the user is thinking — but never inside app-private
+    // storage. The drive lands there by default when all-files access has
+    // not been granted yet, and that is exactly the case where the user is
+    // trying to get out: starting there opens the picker two levels inside
+    // Android/data, whose parent Android refuses to list, so every route to
+    // the rest of the phone is walled off.
     final current = widget.current;
-    if (current != null && Directory(current).existsSync()) {
-      _open(p.dirname(current));
-    } else if (widget.volumes.length == 1) {
-      _open(widget.volumes.single.path);
-    }
+    final start = current != null &&
+            Directory(current).existsSync() &&
+            !FolderRules.isAppPrivate(current, _roots)
+        ? p.dirname(current)
+        : _defaultRoot;
+
+    if (start != null) _open(start);
   }
 
   Future<void> _open(String path) async {
@@ -70,10 +93,19 @@ class _FolderPickerState extends State<_FolderPicker> {
     });
 
     try {
-      final entries = await Listing.read(Directory(path));
+      final entries = await widget.read(Directory(path));
       if (!mounted) return;
+
+      // At a volume root, drop the folders the rules can never accept.
+      // Listing `Android` offers a door that is always locked, and walking
+      // into it reaches `Android/data`, which not even all-files access can
+      // read.
+      final atRoot = _roots.any((r) => p.equals(r, path));
       setState(() {
-        _folders = entries.where((e) => e.isDirectory).toList();
+        _folders = entries
+            .where((e) => e.isDirectory)
+            .where((e) => !atRoot || !FolderRules.isOffLimitsName(e.name))
+            .toList();
         _itemCount = entries.length;
         _loading = false;
       });
@@ -151,6 +183,25 @@ class _FolderPickerState extends State<_FolderPicker> {
                   ),
                 ),
               ),
+            // Up lives here, not in the list. As a list row it vanished
+            // whenever the list did — an empty folder or one Android refuses
+            // to read left the user with no way back out, which is exactly
+            // where they most need one.
+            if (_canGoUp)
+              InkWell(
+                onTap: _up,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.arrow_upward, size: 20),
+                      const SizedBox(width: 16),
+                      Text('Up one level', style: theme.textTheme.bodyLarge),
+                    ],
+                  ),
+                ),
+              ),
+            Divider(height: 1, color: scheme.outlineVariant),
             Expanded(child: _body()),
             if (path != null)
               _Footer(
@@ -187,17 +238,10 @@ class _FolderPickerState extends State<_FolderPicker> {
     }
 
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-      itemCount: _folders.length + (_canGoUp ? 1 : 0),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      itemCount: _folders.length,
       itemBuilder: (context, index) {
-        if (_canGoUp && index == 0) {
-          return ListTile(
-            leading: const Icon(Icons.arrow_upward),
-            title: const Text('Up one level'),
-            onTap: _up,
-          );
-        }
-        final folder = _folders[index - (_canGoUp ? 1 : 0)];
+        final folder = _folders[index];
         return ListTile(
           leading: Icon(Icons.folder,
               color: Theme.of(context).colorScheme.primary),

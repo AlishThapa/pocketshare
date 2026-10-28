@@ -46,6 +46,32 @@ Future<void> main() async {
   check('refuses inside Android/data',
       FolderRules.problem('/storage/emulated/0/Android/data/x', roots) != null);
 
+  print('\n-- spotting app-private storage --');
+  // The picker must not open here. The route back out runs through
+  // Android/data, which Android refuses to list even with all-files access,
+  // so an up-by-one walk hits a wall and the user is stuck.
+  check('the app\'s own folder is app-private',
+      FolderRules.isAppPrivate(
+          '/storage/emulated/0/Android/data/np.com.thapaalish.pocketshare/files/PocketShare',
+          roots));
+  check('Android itself is app-private',
+      FolderRules.isAppPrivate('/storage/emulated/0/Android', roots));
+  check('app-private on the card too',
+      FolderRules.isAppPrivate('/storage/1A2B-3C4D/Android/data/x', roots));
+  check('a normal folder is not app-private',
+      !FolderRules.isAppPrivate('/storage/emulated/0/PocketShare', roots));
+  check('a folder merely named Android deeper down is not',
+      !FolderRules.isAppPrivate('/storage/emulated/0/Docs/Android', roots));
+  check('the volume root is not app-private',
+      !FolderRules.isAppPrivate('/storage/emulated/0', roots));
+  check('somewhere off the volumes is not app-private',
+      !FolderRules.isAppPrivate('/data/data/x', roots));
+  check('Android is named as off limits',
+      FolderRules.isOffLimitsName('Android'));
+  check('an ordinary folder is not',
+      !FolderRules.isOffLimitsName('Download'));
+
+  print('\n-- more folder rules --');
   check('refuses somewhere off the volumes',
       FolderRules.problem('/data/data/np.com.thapaalish.pocketshare', roots) !=
           null);

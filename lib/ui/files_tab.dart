@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MissingPluginException;
 import 'package:path/path.dart' as p;
 
 import '../files/listing.dart';
@@ -49,10 +50,27 @@ class _FilesTabState extends State<FilesTab> {
   bool _loading = true;
   String? _error;
 
+  /// Where the drive ought to live: `PocketShare` on internal storage. Only
+  /// filled when the drive is somewhere it should not stay, so the one-tap
+  /// offer never appears next to a folder the user chose on purpose.
+  String? _suggested;
+
   @override
   void initState() {
     super.initState();
     _syncRoot();
+    _findSuggestion();
+  }
+
+  Future<void> _findSuggestion() async {
+    if (widget.controller.storageSurvivesUninstall) return;
+    try {
+      final volumes = await widget.controller.storageVolumes();
+      if (!mounted || volumes.isEmpty) return;
+      setState(() => _suggested = volumes.first.drivePath);
+    } on MissingPluginException {
+      // Not on Android; the offer simply does not appear.
+    }
   }
 
   @override
@@ -130,6 +148,8 @@ class _FilesTabState extends State<FilesTab> {
             _LocationPanel(
               path: c.driveRootPath,
               survivesUninstall: c.storageSurvivesUninstall,
+              suggested: _suggested,
+              onMoveToSuggested: _moveToSuggested,
               onChangeFolder: _changeFolder,
               onOpenExternally: _openInFileManager,
             ),
@@ -250,39 +270,64 @@ class _FilesTabState extends State<FilesTab> {
     _say('This phone has no file manager that will open a folder directly.');
   }
 
+  /// Moves the drive to the obvious folder — `PocketShare` on internal
+  /// storage — without making the user walk a picker to find it.
+  ///
+  /// This exists because the drive only sits in app-private storage when
+  /// all-files access was missing at first run, and the way out of that is
+  /// always the same folder. Offering it as one tap beats asking someone to
+  /// navigate to a place they have no particular reason to know about.
+  Future<void> _moveToSuggested() async {
+    final target = _suggested;
+    if (target == null || !await _ensureAllFilesAccess()) return;
+
+    try {
+      await Directory(target).create(recursive: true);
+    } on FileSystemException catch (e) {
+      _say('Could not create $target: ${e.osError?.message ?? e.message}');
+      return;
+    }
+    if (!mounted) return;
+    await _moveTo(target);
+  }
+
+  /// True when the drive may write outside its own sandbox. Returns false
+  /// after sending the user to the system screen, since the answer only
+  /// changes once they come back.
+  Future<bool> _ensureAllFilesAccess() async {
+    if (await Native.hasAllFilesAccess()) return true;
+    if (!mounted) return false;
+
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Allow access to all files'),
+        content: const Text(
+          'To keep your files in a folder of your own — one that survives '
+          'uninstalling this app, and that you can open in the phone\'s '
+          'Files app — Android needs to grant this app access to storage.\n\n'
+          'You will be taken to a system screen to turn it on.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Open settings'),
+          ),
+        ],
+      ),
+    );
+    if (proceed != true) return false;
+    await Native.requestAllFilesAccess();
+    return false; // The user comes back and taps again.
+  }
+
   Future<void> _changeFolder() async {
     final c = widget.controller;
-
-    // Everything outside the app's own directory needs all-files access, and
-    // only a system screen can grant it.
-    if (!await Native.hasAllFilesAccess()) {
-      if (!mounted) return;
-      final proceed = await showDialog<bool>(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Allow access to all files'),
-          content: const Text(
-            'To keep your files in a folder of your own — one that survives '
-            'uninstalling this app, and that you can open in the phone\'s '
-            'Files app — Android needs to grant this app access to storage.\n\n'
-            'You will be taken to a system screen to turn it on.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Not now'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Open settings'),
-            ),
-          ],
-        ),
-      );
-      if (proceed != true) return;
-      await Native.requestAllFilesAccess();
-      return; // The user comes back and taps again.
-    }
+    if (!await _ensureAllFilesAccess()) return;
 
     final volumes = await c.storageVolumes();
     if (!mounted) return;
@@ -293,8 +338,13 @@ class _FilesTabState extends State<FilesTab> {
       current: c.driveRootPath,
     );
     if (chosen == null || !mounted) return;
+    await _moveTo(chosen);
+  }
+
+  Future<void> _moveTo(String target) async {
+    final c = widget.controller;
     final was = c.driveRootPath ?? '';
-    if (p.equals(chosen, was)) return;
+    if (p.equals(target, was)) return;
 
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(
@@ -302,11 +352,11 @@ class _FilesTabState extends State<FilesTab> {
     );
 
     try {
-      final result = await c.changeStorageToPath(chosen);
+      final result = await c.changeStorageToPath(target);
       messenger.showSnackBar(
         SnackBar(
           duration: const Duration(seconds: 6),
-          content: Text(_moveReport(result, from: was, to: chosen)),
+          content: Text(_moveReport(result, from: was, to: target)),
         ),
       );
       if (mounted) _syncRoot();
@@ -347,12 +397,19 @@ class _LocationPanel extends StatelessWidget {
   const _LocationPanel({
     required this.path,
     required this.survivesUninstall,
+    required this.suggested,
+    required this.onMoveToSuggested,
     required this.onChangeFolder,
     required this.onOpenExternally,
   });
 
   final String? path;
   final bool survivesUninstall;
+
+  /// The folder the drive should move to, when it is somewhere temporary.
+  final String? suggested;
+
+  final VoidCallback onMoveToSuggested;
   final VoidCallback onChangeFolder;
   final VoidCallback onOpenExternally;
 
@@ -402,6 +459,29 @@ class _LocationPanel extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 14),
+
+          // When the folder is temporary, the fix is always the same folder,
+          // so it is one labelled button rather than a picker the user has
+          // to navigate on their own.
+          if (!survivesUninstall && suggested != null) ...[
+            FilledButton.icon(
+              onPressed: onMoveToSuggested,
+              icon: const Icon(Icons.drive_file_move_outline, size: 18),
+              label: Text('Move to ${p.basename(suggested!)}'),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(46),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              suggested!,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           Wrap(
             spacing: 10,
             runSpacing: 8,
@@ -413,8 +493,10 @@ class _LocationPanel extends StatelessWidget {
               ),
               OutlinedButton.icon(
                 onPressed: onChangeFolder,
-                icon: const Icon(Icons.drive_file_move_outline, size: 18),
-                label: Text(survivesUninstall ? 'Change folder' : 'Move files'),
+                icon: const Icon(Icons.folder_open_outlined, size: 18),
+                label: Text(
+                  survivesUninstall ? 'Change folder' : 'Choose a folder',
+                ),
               ),
             ],
           ),
