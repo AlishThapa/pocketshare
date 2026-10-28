@@ -148,6 +148,55 @@ class InviteStore {
         [normalize(rawCode)],
       );
 
+  /// Every code, as plain maps, for a recovery backup.
+  List<Map<String, Object?>> export() => [
+        for (final i in list())
+          {
+            'code': i.code,
+            'label': i.label,
+            'uses': i.uses,
+            'maxUses': i.maxUses,
+            'revoked': i.revoked,
+            'createdAt': i.createdAt.millisecondsSinceEpoch,
+          },
+      ];
+
+  /// Writes codes back after a reinstall.
+  ///
+  /// `uses` is restored as it was: a code that had been redeemed twice comes
+  /// back having been redeemed twice. Resetting it would quietly hand out
+  /// more invitations than the host ever agreed to.
+  ///
+  /// Rows that make no sense are skipped rather than failing the restore —
+  /// getting the drive back matters more than getting every code back, and a
+  /// missing code can be reissued.
+  int restore(List<Map<String, Object?>> rows) {
+    var written = 0;
+    for (final row in rows) {
+      final code = row['code'];
+      final maxUses = row['maxUses'];
+      if (code is! String || code.isEmpty || maxUses is! int || maxUses < 1) {
+        continue;
+      }
+      final uses = row['uses'];
+      _db.execute(
+        'INSERT OR REPLACE INTO invite '
+        '(code, label, uses, max_uses, revoked, created_at) '
+        'VALUES (?, ?, ?, ?, ?, ?)',
+        [
+          normalize(code),
+          row['label'] as String? ?? '',
+          uses is int && uses >= 0 ? uses : 0,
+          maxUses,
+          row['revoked'] == true ? 1 : 0,
+          row['createdAt'] as int? ?? DateTime.now().millisecondsSinceEpoch,
+        ],
+      );
+      written++;
+    }
+    return written;
+  }
+
   void remove(String rawCode) =>
       _db.execute('DELETE FROM invite WHERE code = ?', [normalize(rawCode)]);
 

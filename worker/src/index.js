@@ -43,6 +43,11 @@ export default {
       if (request.method === 'POST' && url.pathname === '/rebind') {
         return await rebind(request, env);
       }
+      if (url.pathname === '/recovery') {
+        if (request.method === 'GET') return await recoveryGet(url, env);
+        if (request.method === 'PUT') return await recoveryPut(request, env);
+        if (request.method === 'DELETE') return await recoveryDelete(request, env);
+      }
       return json({ error: 'not found' }, 404);
     } catch (err) {
       // Never surface Cloudflare API internals to the app.
@@ -202,6 +207,94 @@ async function rebind(request, env) {
     JSON.stringify({ ...existing, deviceId: newDeviceId, reboundAt: Date.now() }),
   );
   return json({ ok: true });
+}
+
+// --- reinstall recovery ------------------------------------------------------
+//
+// A phone stores an encrypted backup here so that reinstalling it does not
+// mean setting the drive up again. This Worker cannot read any of it.
+//
+// The device derives three values from its ANDROID_ID, which it never sends:
+// a lookupId naming the record, a writeAuth proving it may replace it, and an
+// encryption key it keeps. All three come from one PBKDF2 pass and are split
+// with HMAC, so holding the first two says nothing about the third. What is
+// stored here is ciphertext plus two opaque identifiers.
+//
+// That is a deliberate position: this service is treated as a place that may
+// one day be read by someone it should not be, and nothing kept here is worth
+// anything to them.
+
+/** Keeps one phone's blob from being larger than one phone's blob. */
+const MAX_BLOB_BYTES = 64 * 1024;
+
+const LOOKUP_RE = /^[A-Za-z0-9_-]{16,128}$/;
+
+async function recoveryGet(url, env) {
+  const id = (url.searchParams.get('id') || '').trim();
+  if (!LOOKUP_RE.test(id)) return json({ error: 'bad id' }, 400);
+
+  const record = await env.CLAIMS.get(`recovery:${id}`, 'json');
+  if (!record) return json({ error: 'no backup' }, 404);
+
+  // writeAuth is not returned: it is the one value here that grants
+  // something, and a reader does not need it to restore.
+  return json({ blob: record.blob, savedAt: record.savedAt || 0 });
+}
+
+async function recoveryPut(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const id = String(body.id || '').trim();
+  const auth = String(body.writeAuth || '').trim();
+  const blob = String(body.blob || '');
+
+  if (!LOOKUP_RE.test(id)) return json({ error: 'bad id' }, 400);
+  if (!LOOKUP_RE.test(auth)) return json({ error: 'bad writeAuth' }, 400);
+  if (!blob) return json({ error: 'empty backup' }, 400);
+  if (blob.length > MAX_BLOB_BYTES) return json({ error: 'backup too large' }, 413);
+
+  const existing = await env.CLAIMS.get(`recovery:${id}`, 'json');
+
+  // First write claims the slot. Later writes must prove they are the same
+  // device: without this, anyone who learned a lookupId could overwrite
+  // someone's backup with rubbish. They still could not read it.
+  if (existing && !timingSafeEqual(existing.writeAuth, auth)) {
+    return json({ error: 'that backup belongs to another device' }, 403);
+  }
+
+  await env.CLAIMS.put(
+    `recovery:${id}`,
+    JSON.stringify({ blob, writeAuth: auth, savedAt: Date.now() }),
+  );
+  return json({ ok: true });
+}
+
+async function recoveryDelete(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const id = String(body.id || '').trim();
+  const auth = String(body.writeAuth || '').trim();
+  if (!LOOKUP_RE.test(id) || !LOOKUP_RE.test(auth)) {
+    return json({ error: 'bad request' }, 400);
+  }
+
+  const existing = await env.CLAIMS.get(`recovery:${id}`, 'json');
+  if (!existing) return json({ ok: true });
+  if (!timingSafeEqual(existing.writeAuth, auth)) {
+    return json({ error: 'that backup belongs to another device' }, 403);
+  }
+
+  await env.CLAIMS.delete(`recovery:${id}`);
+  return json({ ok: true });
+}
+
+/** Comparison whose duration does not depend on where the strings differ. */
+function timingSafeEqual(a, b) {
+  const x = String(a || '');
+  const y = String(b || '');
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 function validateName(name) {

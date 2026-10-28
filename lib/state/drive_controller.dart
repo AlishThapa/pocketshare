@@ -23,6 +23,8 @@ import '../storage/folder_rules.dart';
 import '../storage/migrate.dart';
 import '../tunnel/cloudflared.dart';
 import '../tunnel/provision.dart';
+import '../tunnel/recovery_payload.dart';
+import '../tunnel/recovery_vault.dart';
 
 enum SetupStage {
   loading,
@@ -107,6 +109,8 @@ class DriveController extends ChangeNotifier {
 
     autostartAcknowledged =
         await _settings.read(key: _kAutostartDone) == 'yes';
+    recoveryEnabled = await _settings.read(key: _kRecoveryOn) == 'yes';
+    recoveryAvailable = await vault.available();
     hasAutostartScreen = await Native.hasAutostartSettings();
 
     claim = await provisioner.saved();
@@ -135,6 +139,109 @@ class DriveController extends ChangeNotifier {
 
   static const _settings = FlutterSecureStorage();
   static const _kAutostartDone = 'autostart_done';
+  static const _kRecoveryOn = 'recovery_backup';
+
+  // --- reinstall recovery ---------------------------------------------------
+
+  late final RecoveryVault vault = RecoveryVault(endpoint: provisioner.endpoint);
+
+  /// Whether an encrypted backup is kept on the Worker. Off unless the user
+  /// turns it on: it is the only thing in this app that puts a credential
+  /// anywhere but the phone, even encrypted, and that is a choice to make
+  /// rather than a default to discover.
+  bool recoveryEnabled = false;
+
+  /// False where ANDROID_ID cannot be trusted, in which case the setting is
+  /// hidden rather than offered and silently broken.
+  bool recoveryAvailable = false;
+
+  Future<void> setRecoveryBackup(bool on) async {
+    recoveryEnabled = on;
+    notifyListeners();
+    await _settings.write(key: _kRecoveryOn, value: on ? 'yes' : 'no');
+
+    // Turning it off deletes the copy rather than just stopping updates,
+    // because "off" has to mean there is nothing out there.
+    if (on) {
+      await backUpForRecovery();
+    } else {
+      await vault.forget();
+    }
+  }
+
+  /// Writes the current state to the vault. Safe to call often and from
+  /// anywhere: it is a no-op when the feature is off, and a failure never
+  /// propagates — a backup that could not be written must not break the
+  /// thing it was backing up.
+  Future<void> backUpForRecovery() async {
+    if (!recoveryEnabled) return;
+    final current = claim;
+    final account = _store?.account;
+    if (current == null || account == null) return;
+
+    await vault.save(RecoveryPayload(
+      hostname: current.hostname,
+      tunnelToken: current.tunnelToken,
+      driveRoot: driveRootPath ?? '',
+      rootAppCreated: await DriveLocation.rootIsAppCreated(),
+      username: account.username,
+      passwordHash: account.passwordHash,
+      passwordSalt: account.salt,
+      passwordIterations: account.iterations,
+      invites: _store == null
+          ? const []
+          : (_inviteStore ??= InviteStore(_store!.db)).export(),
+      savedAt: DateTime.now().millisecondsSinceEpoch,
+    ));
+  }
+
+  /// Looks for a backup belonging to this phone. Null when there is none, or
+  /// when it cannot be read — which, since only this phone's key can open it,
+  /// is the same answer.
+  Future<RecoveryPayload?> findBackup() => vault.restore();
+
+  /// Puts a drive back from [payload] and starts it.
+  ///
+  /// The login is restored from its stored hash, so the same password works
+  /// without the password itself ever having been in the backup. The drive's
+  /// folder is restored as a path: the files were never in the backup either,
+  /// because they were never inside app storage to begin with.
+  Future<void> restoreFromBackup(RecoveryPayload payload) async {
+    final store = _store;
+    if (store == null) return;
+
+    if (payload.driveRoot.isNotEmpty) {
+      await DriveLocation.save(
+        payload.driveRoot,
+        appCreated: payload.rootAppCreated,
+      );
+    }
+
+    store.createAccount(
+      username: payload.username,
+      passwordHash: payload.passwordHash,
+      salt: payload.passwordSalt,
+      iterations: payload.passwordIterations,
+    );
+
+    if (payload.invites.isNotEmpty) {
+      (_inviteStore ??= InviteStore(store.db)).restore(payload.invites);
+    }
+
+    claim = await provisioner.adopt(
+      hostname: payload.hostname,
+      tunnelToken: payload.tunnelToken,
+    );
+
+    recoveryEnabled = true;
+    await _settings.write(key: _kRecoveryOn, value: 'yes');
+
+    stage = SetupStage.ready;
+    notifyListeners();
+
+    await refreshInvites();
+    await startDrive();
+  }
 
   /// Volumes the user can move the drive to. UI isolate only.
   Future<List<StorageVolume>> storageVolumes() => DriveLocation.volumes();
@@ -331,6 +438,7 @@ class DriveController extends ChangeNotifier {
     final made = inviteStore.create(label: label, maxUses: maxUses);
     invites = inviteStore.list();
     notifyListeners();
+    unawaited(backUpForRecovery());
     return made;
   }
 
@@ -536,6 +644,7 @@ class DriveController extends ChangeNotifier {
     stage = SetupStage.ready;
     notifyListeners();
 
+    unawaited(backUpForRecovery());
     await startDrive();
     return true;
   }

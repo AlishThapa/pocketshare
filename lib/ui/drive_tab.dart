@@ -97,6 +97,20 @@ class _DriveTabState extends State<DriveTab> with WidgetsBindingObserver {
                   : 'Signed in as ${c.username}',
               onTap: () => _changeLogin(context),
             ),
+            if (c.recoveryAvailable)
+              PanelTile(
+                icon: Icons.settings_backup_restore_rounded,
+                title: 'Survive a reinstall',
+                subtitle: c.recoveryEnabled
+                    ? 'On. This phone can restore its address, login and '
+                        'invite codes after a reinstall.'
+                    : 'Off. Reinstalling means setting the drive up again.',
+                trailing: Switch(
+                  value: c.recoveryEnabled,
+                  onChanged: (on) => _setRecovery(context, on),
+                ),
+                onTap: () => _setRecovery(context, !c.recoveryEnabled),
+              ),
             PanelTile(
               icon: Icons.receipt_long_rounded,
               title: 'Connection log',
@@ -194,6 +208,60 @@ class _DriveTabState extends State<DriveTab> with WidgetsBindingObserver {
         ),
       );
     }
+  }
+
+  /// Turning this on is the only moment in the app where a credential leaves
+  /// the phone, so it asks first and says exactly what goes and what does not.
+  Future<void> _setRecovery(BuildContext context, bool on) async {
+    final c = widget.controller;
+    final messenger = ScaffoldMessenger.of(context);
+
+    if (!on) {
+      await c.setRecoveryBackup(false);
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Backup deleted. Reinstalling will mean setting the '
+              'drive up again.'),
+        ),
+      );
+      return;
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Survive a reinstall'),
+        content: const Text(
+          'Keeps an encrypted copy of your address, your login and your '
+          'invite codes, so this phone can pick them up again after a '
+          'reinstall.\n\n'
+          'It is locked with a key derived from this phone, which is never '
+          'sent — so the service holding it cannot read it, and neither can '
+          'anyone else. Your Cloudflare token is not included at all.\n\n'
+          'It only works on this phone. After a factory reset or on a new '
+          'handset, the backup is gone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Turn it on'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    await c.setRecoveryBackup(true);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Backed up. This phone can restore itself after a '
+            'reinstall.'),
+      ),
+    );
   }
 
   void _showLogs(BuildContext context) {

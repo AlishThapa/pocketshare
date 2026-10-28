@@ -107,6 +107,53 @@ void main() {
   }());
 
   db.dispose();
+  print('\n-- export and restore --');
+  // What a reinstall otherwise destroys with no way back: codes live only on
+  // the host.
+  final fresh = InviteStore(sqlite3.openInMemory());
+  final a = fresh.create(label: 'family', maxUses: 3);
+  final b = fresh.create(label: 'one-shot', maxUses: 1);
+  fresh.consume(b.code);
+  fresh.revoke(a.code);
+
+  final exported = fresh.export();
+  check('every code is exported', exported.length == 2, '${exported.length}');
+
+  final restored = InviteStore(sqlite3.openInMemory());
+  check('all rows are written back', restored.restore(exported) == 2);
+
+  final backA = restored.find(a.code)!;
+  check('the label survives', backA.label == 'family', backA.label);
+  check('the cap survives', backA.maxUses == 3, '${backA.maxUses}');
+  check('revocation survives', backA.revoked);
+
+  // The one that matters: resetting uses would hand out more invitations
+  // than the host ever agreed to.
+  final backB = restored.find(b.code)!;
+  check('spent uses survive', backB.uses == 1, '${backB.uses}');
+  check('and it is still exhausted', backB.exhausted);
+
+  check('restoring twice does not duplicate',
+      restored.restore(exported) == 2 && restored.list().length == 2);
+
+  print('\n-- restore refuses nonsense --');
+  final picky = InviteStore(sqlite3.openInMemory());
+  check('a row with no code is skipped',
+      picky.restore([{'maxUses': 1}]) == 0);
+  check('a row with no cap is skipped',
+      picky.restore([{'code': 'ABC123'}]) == 0);
+  check('a zero cap is skipped',
+      picky.restore([{'code': 'ABC123', 'maxUses': 0}]) == 0);
+  check('a wrong-typed cap is skipped',
+      picky.restore([{'code': 'ABC123', 'maxUses': 'three'}]) == 0);
+  check('good rows still land beside bad ones',
+      picky.restore([
+            {'code': 'BAD'},
+            {'code': 'GOOD22', 'maxUses': 2},
+          ]) ==
+          1);
+  check('nothing bad was written', picky.list().length == 1);
+
   print('\n$passed passed, $failed failed\n');
   if (failed > 0) exitCode = 1;
 }

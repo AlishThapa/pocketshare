@@ -187,6 +187,82 @@ console.log('\n-- /rebind --');
   check('missing fields are refused', status === 400, `${status}`);
 }
 
+console.log('\n-- /recovery --');
+{
+  const ID = 'a'.repeat(43);
+  const AUTH = 'b'.repeat(43);
+  const OTHER_AUTH = 'c'.repeat(43);
+  const BLOB = 'v1.bm9uY2U.Y2lwaGVydGV4dA';
+
+  const send = (e, method, body, query = '') =>
+    worker.fetch(new Request(`https://provision.example/recovery${query}`, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), e);
+
+  let e = env({});
+  let [status, out] = await body(await send(e, 'GET', undefined, `?id=${ID}`));
+  check('no backup is a 404', status === 404, `${status}`);
+
+  [status, out] = await body(await send(e, 'PUT', { id: ID, writeAuth: AUTH, blob: BLOB }));
+  check('the first write claims the slot', status === 200 && out.ok === true, `${status}`);
+
+  [status, out] = await body(await send(e, 'GET', undefined, `?id=${ID}`));
+  check('it reads back', status === 200 && out.blob === BLOB, `${status}`);
+  check('savedAt is recorded', typeof out.savedAt === 'number');
+
+  // The one value stored here that grants anything. A reader does not need
+  // it, so a reader does not get it.
+  check('reading does not hand back the writeAuth', out.writeAuth === undefined);
+
+  [status, out] = await body(await send(e, 'PUT', { id: ID, writeAuth: AUTH, blob: BLOB + 'x' }));
+  check('the same device may overwrite', status === 200, `${status}`);
+  [status, out] = await body(await send(e, 'GET', undefined, `?id=${ID}`));
+  check('the overwrite took', out.blob === BLOB + 'x');
+
+  [status, out] = await body(await send(e, 'PUT', { id: ID, writeAuth: OTHER_AUTH, blob: 'junk-blob' }));
+  check('another caller cannot overwrite', status === 403, `${status}`);
+  [status, out] = await body(await send(e, 'GET', undefined, `?id=${ID}`));
+  check('and the backup is untouched', out.blob === BLOB + 'x', out.blob);
+
+  console.log('\n-- /recovery refusals --');
+  [status] = await body(await send(e, 'GET', undefined, '?id=short'));
+  check('a malformed id is refused', status === 400, `${status}`);
+  [status] = await body(await send(e, 'GET', undefined, '?id=' + 'x'.repeat(400)));
+  check('an overlong id is refused', status === 400, `${status}`);
+  [status] = await body(await send(e, 'GET', undefined, `?id=${'a/b'.padEnd(20, 'c')}`));
+  check('a non-url-safe id is refused', status === 400, `${status}`);
+  [status] = await body(await send(e, 'PUT', { id: ID, writeAuth: AUTH, blob: '' }));
+  check('an empty backup is refused', status === 400, `${status}`);
+  [status] = await body(await send(e, 'PUT', { id: ID, writeAuth: AUTH, blob: 'z'.repeat(70000) }));
+  check('an oversized backup is refused', status === 413, `${status}`);
+  [status] = await body(await send(e, 'PUT', { id: ID, blob: BLOB }));
+  check('a write without auth is refused', status === 400, `${status}`);
+
+  console.log('\n-- /recovery delete --');
+  e = env({});
+  await send(e, 'PUT', { id: ID, writeAuth: AUTH, blob: BLOB });
+  [status] = await body(await send(e, 'DELETE', { id: ID, writeAuth: OTHER_AUTH }));
+  check('another caller cannot delete', status === 403, `${status}`);
+  check('so it is still there', e.CLAIMS.store.has(`recovery:${ID}`));
+
+  [status, out] = await body(await send(e, 'DELETE', { id: ID, writeAuth: AUTH }));
+  check('the owner can delete', status === 200 && out.ok === true, `${status}`);
+  check('turning it off really removes it', !e.CLAIMS.store.has(`recovery:${ID}`));
+
+  [status] = await body(await send(e, 'DELETE', { id: ID, writeAuth: AUTH }));
+  check('deleting twice is harmless', status === 200, `${status}`);
+
+  // What the Worker is holding, spelled out: ciphertext and two opaque ids.
+  e = env({});
+  await send(e, 'PUT', { id: ID, writeAuth: AUTH, blob: BLOB });
+  const stored = JSON.parse(e.CLAIMS.store.get(`recovery:${ID}`));
+  check('nothing but blob, writeAuth and savedAt is stored',
+    Object.keys(stored).sort().join(',') === 'blob,savedAt,writeAuth',
+    Object.keys(stored).join(','));
+}
+
 console.log('\n-- unknown routes --');
 {
   const [status] = await body(await call(env({}), '/nope'));
