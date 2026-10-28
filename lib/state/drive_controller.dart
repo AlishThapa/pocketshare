@@ -469,10 +469,14 @@ class DriveController extends ChangeNotifier {
       notifyListeners();
       return true;
     } on CloudflareError catch (e) {
+      // A plain duplicate is handled for us now: HostProvisioner adopts a
+      // dormant tunnel of the same name, which is what a reinstall needs.
+      // Getting here means the tunnel exists but could not be read back, so
+      // the only remaining advice is the manual one.
       errorMessage = e.isDuplicateTunnel
-          ? 'A tunnel named ${DriveName.tunnelName(rawName)} already exists on '
-              'your account. Delete it in the Cloudflare dashboard, or pick '
-              'another name.'
+          ? 'A tunnel named ${DriveName.tunnelName(rawName)} is on your '
+              'account but could not be read back. Delete it in the '
+              'Cloudflare dashboard, or pick another name.'
           : e.message;
       notifyListeners();
       return false;

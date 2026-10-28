@@ -281,7 +281,8 @@ The server suite exercises auth, path traversal, chunked upload with a
 deliberately skipped chunk, range requests, non-ASCII filenames and
 trash/restore against a real server on a real port. The Cloudflare suite runs
 against a fake that can be told to fail individual endpoints, covering invalid
-and under-scoped tokens, duplicate tunnel names, and rollback. The file suite
+and under-scoped tokens, tunnel adoption on reinstall, refusing to adopt a
+live tunnel, and rollback. The file suite
 moves real directories in a temp folder, including the two cases that lose
 data if they are wrong: a name collision in the destination, and a destination
 inside the source. The widget tests stub the platform channels and render both
@@ -292,6 +293,13 @@ tabs, checking among other things that the share text carries no credential.
 - **Guests cannot redeem a code yet.** The host's `/provision/*` endpoints are
   not built. Everything behind them is: the API client, the provisioner with
   rollback, the name rules and the invite store.
+- **Uninstalling forgets the drive.** The claim, the login, invite codes and
+  the Cloudflare token all live in app storage, which Android wipes, and
+  `allowBackup="false"` means there is no backup to restore from. Files under
+  `/storage/emulated/0/PocketShare` survive. Re-claiming the same name after a
+  reinstall works — the dormant tunnel is adopted — but the Cloudflare token
+  has to be entered again and a new login created. Restoring a claim without
+  putting it somewhere Google can read is not solved.
 - Release builds are signed with the debug key. Replace before distributing.
 - The web UI cannot empty the trash or move a file between folders, though the
   server supports both.

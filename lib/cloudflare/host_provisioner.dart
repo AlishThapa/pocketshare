@@ -27,38 +27,43 @@ class HostProvisioner {
 
   /// Creates a tunnel, points it at the drive, and publishes the DNS record.
   ///
-  /// Any failure after the tunnel exists deletes it again. Without that, a
-  /// half-made claim leaves a tunnel holding the name, and the same name can
-  /// never be claimed again — which is exactly the state a wiped install left
-  /// behind and had to be cleaned up by hand.
+  /// When a tunnel of that name already exists and nothing is connected to
+  /// it, it is adopted instead of refused. That is what a reinstall looks
+  /// like: uninstalling wipes the app's copy of the tunnel token but leaves
+  /// the tunnel standing on the account, so without this, re-claiming your
+  /// own name means a trip to the Cloudflare dashboard to delete it by hand.
+  /// A tunnel with a live connection is still refused — see
+  /// [CfExistingTunnel.active].
+  ///
+  /// Any failure after the tunnel exists deletes it again, but only if this
+  /// call is what created it. Without the rollback, a half-made claim leaves
+  /// a tunnel holding the name; without the condition, a failed re-claim
+  /// would delete the very tunnel the user is trying to recover.
   Future<Provisioned> provision(String rawName) async {
     final name = DriveName.normalize(rawName);
     final problem = DriveName.problem(name);
     if (problem != null) throw CloudflareError(problem);
 
     final hostname = '$name.$zone';
+    final tunnelName = DriveName.tunnelName(name);
 
-    CfTunnel? tunnel;
+    final (tunnelId, createdToken, adopted) = await _tunnelFor(tunnelName);
+
     try {
-      tunnel = await api.createTunnel(
-        accountId: accountId,
-        name: DriveName.tunnelName(name),
-      );
       await api.configureIngress(
         accountId: accountId,
-        tunnelId: tunnel.id,
+        tunnelId: tunnelId,
         hostname: hostname,
       );
       await api.upsertCname(
         zoneId: zoneId,
         fqdn: hostname,
-        content: '${tunnel.id}.cfargotunnel.com',
+        content: '$tunnelId.cfargotunnel.com',
       );
     } catch (_) {
-      final made = tunnel;
-      if (made != null) {
+      if (!adopted) {
         try {
-          await api.deleteTunnel(accountId: accountId, tunnelId: made.id);
+          await api.deleteTunnel(accountId: accountId, tunnelId: tunnelId);
         } catch (_) {
           // Rollback is best effort: the original failure is what matters,
           // and swallowing a cleanup error keeps it from masking that.
@@ -69,11 +74,40 @@ class HostProvisioner {
 
     // Ask for the token rather than trusting create's copy: a tunnel that
     // already existed and was adopted does not carry one.
-    final token = tunnel.token.isNotEmpty
-        ? tunnel.token
-        : await api.tunnelToken(accountId: accountId, tunnelId: tunnel.id);
+    final token = createdToken.isNotEmpty
+        ? createdToken
+        : await api.tunnelToken(accountId: accountId, tunnelId: tunnelId);
 
     return Provisioned(hostname: hostname, tunnelToken: token);
+  }
+
+  /// The tunnel to use for [tunnelName]: a new one, or a dormant existing one.
+  ///
+  /// Returns its id, the token creation handed back (empty when adopted), and
+  /// whether it was adopted — which decides whether rollback may delete it.
+  Future<(String, String, bool)> _tunnelFor(String tunnelName) async {
+    try {
+      final made =
+          await api.createTunnel(accountId: accountId, name: tunnelName);
+      return (made.id, made.token, false);
+    } on CloudflareError catch (e) {
+      if (!e.isDuplicateTunnel) rethrow;
+
+      final existing =
+          await api.findTunnel(accountId: accountId, name: tunnelName);
+      // Gone between the two calls, or named something this token cannot
+      // see. Either way the original refusal is the truthful answer.
+      if (existing == null) rethrow;
+
+      if (existing.active) {
+        throw CloudflareError(
+          'A drive is running at that name right now, on this phone or '
+          'another one. Stop it there before claiming the name here, or '
+          'pick a different name.',
+        );
+      }
+      return (existing.id, '', true);
+    }
   }
 
   /// Moves a drive to a new name, keeping its tunnel.

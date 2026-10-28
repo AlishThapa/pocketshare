@@ -48,6 +48,29 @@ class CfAccount {
   final String name;
 }
 
+/// A tunnel that already exists on the account, as the list endpoint
+/// describes it. Distinct from [CfTunnel] because a listed tunnel carries no
+/// token — that has to be fetched — but does say whether anything is
+/// currently connected to it.
+class CfExistingTunnel {
+  const CfExistingTunnel({
+    required this.id,
+    required this.name,
+    required this.active,
+  });
+
+  final String id;
+  final String name;
+
+  /// True when cloudflared is connected to this tunnel right now, so a drive
+  /// is serving through it. Adopting an active tunnel would hand its token to
+  /// a second device, and Cloudflare reads two connections as high
+  /// availability: both phones would serve, splitting requests between two
+  /// different sets of files. So this is the difference between a leftover
+  /// worth reusing and a live drive worth refusing.
+  final bool active;
+}
+
 class CfTunnel {
   const CfTunnel({required this.id, required this.token});
   final String id;
@@ -248,6 +271,53 @@ class CloudflareApi {
         'is_deleted': 'false',
         if (name != null) 'name': name,
       });
+
+  /// The tunnel with exactly this name, or null when the account has none.
+  ///
+  /// Used after a duplicate-name refusal, to tell a leftover tunnel from a
+  /// live one. The name filter is server-side, but it is matched again here:
+  /// Cloudflare treats `name` as a prefix-ish search on some plans, and
+  /// adopting `ps-alishdrive-old` when asked for `ps-alishdrive` would point
+  /// the wrong tunnel at the drive.
+  Future<CfExistingTunnel?> findTunnel({
+    required String accountId,
+    required String name,
+  }) async {
+    final rows = await listTunnels(accountId: accountId, name: name);
+    for (final row in rows) {
+      if (row['id'] is! String || row['name'] != name) continue;
+      return CfExistingTunnel(
+        id: row['id'] as String,
+        name: name,
+        active: _hasLiveConnection(row),
+      );
+    }
+    return null;
+  }
+
+  /// Whether a listed tunnel has cloudflared attached to it right now.
+  ///
+  /// Read from whichever fields Cloudflare actually sent, erring towards
+  /// "yes": a false positive only costs the user a rename, while a false
+  /// negative quietly puts two phones behind one hostname. `down` and
+  /// `inactive` both mean nothing is connected — `down` has been connected
+  /// before, which is exactly what a leftover from a wiped install looks
+  /// like.
+  static bool _hasLiveConnection(Map<String, Object?> row) {
+    final conns = row['connections'];
+    if (conns is List && conns.isNotEmpty) return true;
+
+    final status = (row['status'] as String?)?.toLowerCase();
+    if (status == 'healthy' || status == 'degraded') return true;
+
+    // Older payloads carry no status, only a pair of timestamps.
+    if (status == null &&
+        row['conns_active_at'] is String &&
+        row['conns_inactive_at'] == null) {
+      return true;
+    }
+    return false;
+  }
 
   /// Points `<name>.<zone>` at the tunnel, updating any record already there.
   ///

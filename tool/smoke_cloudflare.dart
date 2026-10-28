@@ -111,6 +111,14 @@ class FakeCloudflare {
       ]);
     }
 
+    if (path.endsWith('/cfd_tunnel') && method == 'GET') {
+      final wanted = req.uri.queryParameters['name'];
+      return _ok(
+        req,
+        tunnels.values.where((t) => wanted == null || t['name'] == wanted).toList(),
+      );
+    }
+
     if (path.endsWith('/cfd_tunnel') && method == 'POST') {
       final name = json['name'] as String;
       if (tunnels.values.any((t) => t['name'] == name)) {
@@ -122,7 +130,15 @@ class FakeCloudflare {
         });
       }
       final id = 'tun-${tunnels.length + 1}';
-      tunnels[id] = {'id': id, 'name': name, 'ingress': null};
+      tunnels[id] = {
+        'id': id,
+        'name': name,
+        'ingress': null,
+        // A tunnel nothing has connected to yet, which is also what a
+        // leftover from a wiped install looks like.
+        'status': 'inactive',
+        'connections': <Object?>[],
+      };
       return _ok(req, {'id': id, 'name': name, 'token': 'tunnel-token-$id'});
     }
 
@@ -303,13 +319,68 @@ Future<void> main() async {
   }
   check('no tunnel made for a bad name', fake.tunnels.length == 2);
 
-  print('\n-- duplicate tunnel --');
+  print('\n-- reinstall adopts its own dormant tunnel --');
+  // Exactly the reinstall case: the tunnel and DNS record still stand on the
+  // account, but the app has lost the token and is claiming the name again.
+  final kept = fake.tunnels.entries
+      .firstWhere((e) => e.value['name'] == 'ps-alishdrive');
+  final tunnelCountBeforeReclaim = fake.tunnels.length;
+  final dnsCountBeforeReclaim = fake.dns.length;
+
+  final reclaimed = await host.provision('alishdrive');
+  check('re-claiming the same name succeeds',
+      reclaimed.hostname == 'alishdrive.thapaalish.com.np', reclaimed.hostname);
+  check('no second tunnel created',
+      fake.tunnels.length == tunnelCountBeforeReclaim, '${fake.tunnels.length}');
+  check('the existing tunnel was kept', fake.tunnels.containsKey(kept.key));
+  check('its token is handed back',
+      reclaimed.tunnelToken == 'tunnel-token-${kept.key}',
+      reclaimed.tunnelToken);
+  check('no duplicate DNS record',
+      fake.dns.length == dnsCountBeforeReclaim, '${fake.dns.length}');
+  check('ingress re-pointed at the same tunnel',
+      fake.tunnels[kept.key]!['ingress'] != null);
+
+  print('\n-- a live tunnel is not adopted --');
+  fake.tunnels[kept.key]!['status'] = 'healthy';
+  fake.tunnels[kept.key]!['connections'] = [
+    {'id': 'conn-1'}
+  ];
   try {
     await host.provision('alishdrive');
-    check('duplicate tunnel name refused', false, 'no error thrown');
+    check('live tunnel refused', false, 'no error thrown');
   } on CloudflareError catch (e) {
-    check('duplicate tunnel name refused', e.isDuplicateTunnel, '${e.code}');
+    check('live tunnel refused', true);
+    check('message says a drive is already running',
+        e.message.contains('running at that name'), e.message);
+    check('not reported as a duplicate-name problem', !e.isDuplicateTunnel,
+        e.message);
   }
+  check('the live tunnel was left alone', fake.tunnels.containsKey(kept.key));
+  fake.tunnels[kept.key]!['status'] = 'inactive';
+  fake.tunnels[kept.key]!['connections'] = <Object?>[];
+
+  print('\n-- a prefix match is not adopted --');
+  // Cloudflare's name filter is not always exact; adopting the wrong tunnel
+  // would point a stranger's hostname at this drive.
+  await host.provision('alishdrive-old');
+  final older = fake.tunnels.entries
+      .firstWhere((e) => e.value['name'] == 'ps-alishdrive-old');
+  check('distinct name got its own tunnel', older.key != kept.key);
+
+  print('\n-- adopting does not delete on failure --');
+  // The dangerous case: a re-claim that fails partway must not delete the
+  // tunnel the user is trying to recover.
+  fake.failOn('/dns_records');
+  try {
+    await host.provision('alishdrive');
+    check('failed re-claim surfaces', false, 'no error thrown');
+  } on CloudflareError {
+    check('failed re-claim surfaces', true);
+  }
+  fake.failures.clear();
+  check('the adopted tunnel survived the failure',
+      fake.tunnels.containsKey(kept.key));
 
   print('\n-- rollback --');
   final tunnelsBefore = fake.tunnels.length;
