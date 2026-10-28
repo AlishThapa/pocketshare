@@ -31,6 +31,9 @@ export default {
     const url = new URL(request.url);
 
     try {
+      if (request.method === 'GET' && url.pathname === '/invite') {
+        return await invite(url, env);
+      }
       if (request.method === 'GET' && url.pathname === '/available') {
         return await available(url, env);
       }
@@ -46,7 +49,33 @@ export default {
   },
 };
 
+/**
+ * Checks an invite code and, only if it is good, says which domain it is for.
+ *
+ * The domain is the answer to "whose PocketShare am I joining?", and until a
+ * code proves the asker was invited there is no reason to tell them. This is
+ * also the gate on /available: without it, anyone who installed the app could
+ * probe which names are taken on the domain.
+ */
+async function invite(url, env) {
+  const code = (url.searchParams.get('code') || '').toUpperCase().trim();
+  const check = await checkInvite(env, code);
+  if (!check.ok) return json({ ok: false, error: check.error }, 403);
+
+  return json({
+    ok: true,
+    domain: env.ROOT_DOMAIN,
+    remaining: check.remaining,
+  });
+}
+
 async function available(url, env) {
+  // A name check reveals what is taken on the domain, so it needs the same
+  // invite a claim does.
+  const code = (url.searchParams.get('code') || '').toUpperCase().trim();
+  const invited = await checkInvite(env, code);
+  if (!invited.ok) return json({ available: false, reason: invited.error }, 403);
+
   const name = (url.searchParams.get('name') || '').toLowerCase().trim();
   const problem = validateName(name);
   if (problem) return json({ available: false, reason: problem });
@@ -151,12 +180,13 @@ async function reserveName(env, name, deviceId) {
 async function checkInvite(env, code) {
   if (!code) return { ok: false, error: 'invite code required' };
 
-  const invite = await env.CLAIMS.get(`invite:${code}`, 'json');
-  if (!invite) return { ok: false, error: 'invalid invite code' };
-  if (invite.uses >= invite.maxUses) {
+  const found = await env.CLAIMS.get(`invite:${code}`, 'json');
+  if (!found) return { ok: false, error: 'invalid invite code' };
+  if (found.revoked) return { ok: false, error: 'this invite code was revoked' };
+  if (found.uses >= found.maxUses) {
     return { ok: false, error: 'this invite code is used up' };
   }
-  return { ok: true };
+  return { ok: true, remaining: Math.max(0, found.maxUses - found.uses) };
 }
 
 /** Called only after a claim fully succeeds, so a fault never eats a code. */

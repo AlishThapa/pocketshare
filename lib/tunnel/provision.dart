@@ -41,9 +41,39 @@ class Provisioner {
     return id;
   }
 
-  Future<NameCheck> checkAvailable(String name) async {
+  /// Checks an invite code and learns which domain it is for.
+  ///
+  /// The guest has no other way to know the domain: it belongs to whoever
+  /// invited them, and the app is not told it until a code proves they were
+  /// invited. This is why it runs before the name field exists — a name is
+  /// meaningless until there is a domain to hang it on.
+  Future<InviteCheck> checkInvite(String code) async {
+    final uri = Uri.parse('$endpoint/invite')
+        .replace(queryParameters: {'code': code});
+    try {
+      final res = await _http.get(uri).timeout(const Duration(seconds: 15));
+      final body = _decode(res);
+      return InviteCheck(
+        ok: body['ok'] == true,
+        domain: body['domain'] as String?,
+        remaining: (body['remaining'] as num?)?.toInt(),
+      );
+    } on ProvisionError catch (e) {
+      return InviteCheck(ok: false, reason: e.message);
+    } catch (e) {
+      return InviteCheck(
+        ok: false,
+        reason: 'could not reach ${uri.host} (${e.runtimeType})',
+      );
+    }
+  }
+
+  Future<NameCheck> checkAvailable(
+    String name, {
+    required String inviteCode,
+  }) async {
     final uri = Uri.parse('$endpoint/available')
-        .replace(queryParameters: {'name': name});
+        .replace(queryParameters: {'name': name, 'code': inviteCode});
     try {
       final res = await _http.get(uri).timeout(const Duration(seconds: 15));
       final body = _decode(res);
@@ -137,6 +167,22 @@ class Provisioner {
     }
     return body;
   }
+}
+
+/// What the Worker says about an invite code. [domain] is set only when the
+/// code is good, which is also what unlocks the rest of the screen.
+class InviteCheck {
+  const InviteCheck({
+    required this.ok,
+    this.domain,
+    this.remaining,
+    this.reason,
+  });
+
+  final bool ok;
+  final String? domain;
+  final int? remaining;
+  final String? reason;
 }
 
 class NameCheck {

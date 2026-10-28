@@ -15,6 +15,7 @@ import 'package:pocketshare/main.dart' show appTheme;
 import 'package:pocketshare/state/drive_controller.dart';
 import 'package:pocketshare/tunnel/cloudflared.dart';
 import 'package:pocketshare/tunnel/provision.dart';
+import 'package:pocketshare/ui/claim_screen.dart';
 import 'package:pocketshare/ui/drive_tab.dart';
 import 'package:pocketshare/files/listing.dart';
 import 'package:pocketshare/ui/files_tab.dart';
@@ -222,6 +223,48 @@ void main() {
     await settleIO(tester);
 
     expect(find.text('Nothing here yet'), findsOneWidget);
+  });
+
+  testWidgets('the claim screen asks for nothing but the code at first',
+      (tester) async {
+    // The domain belongs to whoever did the inviting, so it must not appear
+    // — nor must a name field, which would be asking the user to name an
+    // address on a domain they have not been told about.
+    await tester.pumpWidget(wrap(ClaimScreen(controller: controllerAt(root))));
+    await settleIO(tester);
+
+    expect(find.text('Enter your invite code'), findsOneWidget);
+    expect(find.widgetWithText(TextField, 'Invite code'), findsOneWidget);
+    expect(find.text('Continue'), findsOneWidget);
+
+    expect(find.widgetWithText(TextField, 'Name'), findsNothing);
+    expect(find.text('Claim this address'), findsNothing);
+    expect(find.text('Your address will be on'), findsNothing);
+    expect(find.textContaining('.com'), findsNothing);
+  });
+
+  testWidgets('Continue stays disabled until a code is typed', (tester) async {
+    await tester.pumpWidget(wrap(ClaimScreen(controller: controllerAt(root))));
+    await settleIO(tester);
+
+    FilledButton button() => tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Continue'));
+    expect(button().onPressed, isNull);
+
+    await tester.enterText(find.widgetWithText(TextField, 'Invite code'), 'abc123');
+    await settleIO(tester);
+    expect(button().onPressed, isNotNull);
+  });
+
+  testWidgets('the code is uppercased as it is typed', (tester) async {
+    await tester.pumpWidget(wrap(ClaimScreen(controller: controllerAt(root))));
+    await settleIO(tester);
+
+    await tester.enterText(find.widgetWithText(TextField, 'Invite code'), 'abc123');
+    await settleIO(tester);
+
+    final field = tester.widget<EditableText>(find.byType(EditableText));
+    expect(field.controller.text, 'ABC123');
   });
 
   testWidgets('both tabs are reachable from the home screen', (tester) async {

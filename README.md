@@ -9,8 +9,10 @@ There are two ways in, and the first screen asks which one you are:
 - **I have my own domain.** Connect a Cloudflare API token once. The phone can
   then create addresses on that domain — one for itself, and one for anyone it
   invites.
-- **I have an invite code.** Someone with a domain invited you. Paste the code,
-  pick a name, done. You never see Cloudflare.
+- **I have an invite code.** Someone with a domain invited you. Paste the code
+  first: it is what says which domain you are joining, so nothing about the
+  address is shown until the code has been checked. Then pick a name, done.
+  You never see Cloudflare.
 
 ## How it fits together
 
@@ -275,6 +277,8 @@ dart run tool/smoke_cloudflare.dart  # API client + provisioning, vs a fake Clou
 dart run tool/smoke_invites.dart     # invite codes
 dart run tool/smoke_tokens.dart      # masking, fingerprints, token shapes
 dart run tool/dev_server.dart        # run the drive locally to poke at the web UI
+node worker/test.mjs                 # the provisioning Worker, against a fake KV
+flutter test                         # the app's own screens, against stubbed channels
 ```
 
 The server suite exercises auth, path traversal, chunked upload with a
@@ -287,6 +291,8 @@ moves real directories in a temp folder, including the two cases that lose
 data if they are wrong: a name collision in the destination, and a destination
 inside the source. The widget tests stub the platform channels and render both
 tabs, checking among other things that the share text carries no credential.
+The Worker suite calls its exported `fetch` with a fake KV, covering the gate
+that keeps `/available` from answering without a good invite code.
 
 ## Known gaps
 

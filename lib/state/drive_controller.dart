@@ -256,7 +256,13 @@ class DriveController extends ChangeNotifier {
 
   // --- setup ---------------------------------------------------------------
 
-  Future<NameCheck> checkName(String name) => provisioner.checkAvailable(name);
+  Future<NameCheck> checkName(String name, {required String inviteCode}) =>
+      provisioner.checkAvailable(name, inviteCode: inviteCode);
+
+  /// Validates an invite code and learns the domain behind it. The claim
+  /// screen cannot offer a name field before this succeeds.
+  Future<InviteCheck> checkInvite(String code) =>
+      provisioner.checkInvite(code);
 
   // --- screen one ----------------------------------------------------------
 
