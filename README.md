@@ -275,7 +275,8 @@ because a published build cannot be rebuilt per user.
 dart run tool/smoke_server.dart      # the drive's HTTP surface
 dart run tool/smoke_cloudflare.dart  # API client + provisioning, vs a fake Cloudflare
 dart run tool/smoke_invites.dart     # invite codes
-dart run tool/smoke_tokens.dart      # masking, fingerprints, token shapes
+dart run tool/smoke_tokens.dart      # masking, fingerprints, token shapes, device ids
+dart run tool/smoke_recovery.dart    # reinstall-recovery crypto and payload
 dart run tool/dev_server.dart        # run the drive locally to poke at the web UI
 node worker/test.mjs                 # the provisioning Worker, against a fake KV
 flutter test                         # the app's own screens, against stubbed channels
@@ -294,11 +295,41 @@ tabs, checking among other things that the share text carries no credential.
 The Worker suite calls its exported `fetch` with a fake KV, covering the gate
 that keeps `/available` from answering without a good invite code.
 
+## Surviving a reinstall
+
+Off by default, because it is the only thing here that puts a credential
+anywhere but the phone. Turned on, the app keeps an encrypted backup of the
+claim, the login hash and the invite codes on the Worker.
+
+The Worker cannot read it. The phone derives everything from its ANDROID_ID,
+which never leaves the device:
+
+```
+master    = PBKDF2(ANDROID_ID, fixed salt, 600k)
+lookupId  = HMAC(master, "lookup")   -> sent; names the record
+writeAuth = HMAC(master, "write")    -> sent; proves the right to replace it
+encKey    = HMAC(master, "enc")      -> kept; decrypts the record
+```
+
+PBKDF2 is what makes `lookupId` safe to hand over. ANDROID_ID is only 64 bits,
+so a plain hash of it could be brute-forced from a stolen record; at 600k
+iterations that becomes 2^64 x 600k. The payload is AES-256-GCM with a random
+nonce per save, so the server cannot even tell whether anything changed.
+
+The Cloudflare API token is deliberately left out. The tunnel token alone is
+enough to serve the drive at the address it already has, so a restored host
+comes back running and is asked for the API token only when it needs to create
+or rename an address. A cracked backup costs one hostname, not a domain.
+
 ## Known gaps
 
 - **Guests cannot redeem a code yet.** The host's `/provision/*` endpoints are
   not built. Everything behind them is: the API client, the provisioner with
   rollback, the name rules and the invite store.
+- **Reinstall recovery is same-phone only.** The backup is found and unlocked
+  with keys derived from ANDROID_ID, so a factory reset or a new handset makes
+  it both unfindable and unreadable. An exported file for that case is not
+  built.
 - **Uninstalling forgets the drive, but not the name.** The claim, the login,
   invite codes and the Cloudflare token all live in app storage, which Android
   wipes, and `allowBackup="false"` means there is no backup to restore from.
