@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart' show AssetManifest, rootBundle;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as p;
@@ -122,15 +122,50 @@ class DriveTaskHandler extends TaskHandler {
     await _tunnel!.start();
   }
 
+  /// Unpacks the browser UI next to the drive.
+  ///
+  /// The file list comes from the asset manifest rather than being written
+  /// out here. A hardcoded list is a trap: adding a page to assets/web/ looks
+  /// like it worked, because an un-unpacked file falls through to index.html
+  /// and answers 200 with the wrong content — which is a far harder thing to
+  /// notice than a 404.
   Future<void> _installWebUi(Directory webRoot) async {
     await webRoot.create(recursive: true);
-    for (final name in ['index.html', 'app.js', 'style.css']) {
-      final data = await rootBundle.load('assets/web/$name');
-      await File(p.join(webRoot.path, name)).writeAsBytes(
+
+    for (final asset in await _webAssets()) {
+      final name = asset.substring('assets/web/'.length);
+      if (name.isEmpty) continue;
+
+      final data = await rootBundle.load(asset);
+      final target = File(p.join(webRoot.path, name));
+      await target.parent.create(recursive: true);
+      await target.writeAsBytes(
         data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
         flush: true,
       );
     }
+  }
+
+  /// Every bundled file under assets/web/, or the minimum the UI cannot run
+  /// without if the manifest cannot be read.
+  Future<List<String>> _webAssets() async {
+    try {
+      final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+      final found = manifest
+          .listAssets()
+          .where((a) => a.startsWith('assets/web/'))
+          .toList();
+      if (found.isNotEmpty) return found;
+    } catch (e) {
+      _log('asset manifest unreadable ($e); falling back to the core files');
+    }
+    return const [
+      'assets/web/index.html',
+      'assets/web/app.js',
+      'assets/web/style.css',
+      'assets/web/share.html',
+      'assets/web/share.js',
+    ];
   }
 
   void _updateNotification(TunnelState state) {

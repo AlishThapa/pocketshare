@@ -510,6 +510,27 @@ Future<void> main() async {
         r.headers.value('content-disposition') ?? '');
   }
 
+  print('\n-- missing assets must not pretend --');
+  // A file left out of the bundle used to answer 200 with index.html, which
+  // is how share.js shipped broken and looked fine.
+  r = await req('GET', '/not-bundled.js', cookie: liveCookie);
+  await _collect(r);
+  check('a missing script is a 404, not a page', r.statusCode == 404,
+      '${r.statusCode}');
+
+  r = await req('GET', '/missing.css', cookie: liveCookie);
+  await _collect(r);
+  check('a missing stylesheet is a 404 too', r.statusCode == 404,
+      '${r.statusCode}');
+
+  // Extension-less paths are client routes and still fall through, or a
+  // reload inside the app would lose the page.
+  r = await req('GET', '/some/client/route', cookie: liveCookie);
+  final routeBody = await _collect(r);
+  check('a client route still gets the app',
+      r.statusCode == 200 && utf8.decode(routeBody).contains('drive'),
+      '${r.statusCode} ${utf8.decode(routeBody)}');
+
   print('\n-- framing --');
   r = await req('GET', '/', cookie: liveCookie);
   await _collect(r);

@@ -731,10 +731,18 @@ class DriveServer {
   Future<Response> _serveWebUi(Request request) async {
     final requested = request.url.path.isEmpty ? 'index.html' : request.url.path;
     final resolved = resolveFile(webRoot, requested);
+    final exists = resolved != null && await File(resolved.path).exists();
 
     // Unknown paths fall through to index.html so client-side routes survive
-    // a reload.
-    final file = (resolved != null && await File(resolved.path).exists())
+    // a reload — but only paths that could be a route. A missing .js or .css
+    // must 404 rather than answer 200 with a page: a stylesheet that is
+    // quietly HTML is a bug that hides itself, which is exactly how a file
+    // left out of the bundle went unnoticed.
+    if (!exists && p.extension(requested).isNotEmpty) {
+      return Response.notFound('not found');
+    }
+
+    final file = exists
         ? File(resolved.path)
         : File(p.join(webRoot.path, 'index.html'));
 
