@@ -287,7 +287,9 @@ deliberately skipped chunk, range requests, non-ASCII filenames and
 trash/restore against a real server on a real port. The Cloudflare suite runs
 against a fake that can be told to fail individual endpoints, covering invalid
 and under-scoped tokens, tunnel adoption on reinstall, refusing to adopt a
-live tunnel, and rollback. The file suite
+live tunnel, rollback, and renaming — including that the freed name can be
+claimed again, that a failed rename puts the tunnel name and ingress back, and
+that an interrupted one can be retried. The file suite
 moves real directories in a temp folder, including the two cases that lose
 data if they are wrong: a name collision in the destination, and a destination
 inside the source. The widget tests stub the platform channels and render both
@@ -321,8 +323,49 @@ enough to serve the drive at the address it already has, so a restored host
 comes back running and is asked for the API token only when it needs to create
 or rename an address. A cracked backup costs one hostname, not a domain.
 
+## Changing the address
+
+A host can move its drive to another name on the same domain. The tunnel is
+kept, so the phone's tunnel token stays valid and nothing has to be
+re-provisioned — what moves is the tunnel's name, its ingress hostname and
+DNS:
+
+```
+rename ps-<old> -> ps-<new>          the tunnel itself, in place
+ingress = [<new>, <old>]             both answer, so nothing goes dark
+CNAME <new> -> <tunnel>.cfargotunnel.com
+ingress = [<new>]                    narrowed once the new record is live
+delete CNAME <old>                   the old name is released, not aliased
+```
+
+Renaming the tunnel is the step that is easy to skip and expensive to miss.
+A tunnel is named after the drive it serves, so leaving `ps-<old>` behind
+would make the old name look permanently occupied by a *live* tunnel — and
+`provision()` refuses to adopt a live tunnel, so the one person entitled to
+re-claim that name could not. With the rename, the old name is genuinely free.
+
+Up to the point the new CNAME exists, a failure rolls the tunnel name and the
+ingress back and the drive keeps answering where it was. Past that point the
+move has happened, and a rename interrupted in between is resumable: it looks
+for the old tunnel name first, then the new one, so retrying finishes the DNS
+move rather than starting over.
+
+The recovery backup is re-sealed afterwards, since it carries the hostname and
+a stale copy would restore the phone onto the address it just gave up. The
+drive is then restarted — it would keep serving, since the tunnel never
+dropped, but the service read the old hostname out of secure storage when it
+started and is the thing that proves the address answers, so it is made to
+prove the new one.
+
+This is the host path only. A guest's claim lives in the Worker's KV, which
+has no rename, so an invited phone cannot move its name — see Known gaps.
+
 ## Known gaps
 
+- **An invited phone cannot change its address.** Renaming spends the
+  Cloudflare token, and a guest has none: its claim is a KV row on the Worker,
+  which has no rename endpoint. Only the host that owns the domain can move a
+  name, and only its own.
 - **Guests cannot redeem a code yet.** The host's `/provision/*` endpoints are
   not built. Everything behind them is: the API client, the provisioner with
   rollback, the name rules and the invite store.

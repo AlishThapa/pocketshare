@@ -232,17 +232,56 @@ class CloudflareApi {
     required String hostname,
     String service = serviceUrl,
   }) =>
+      configureIngressFor(
+        accountId: accountId,
+        tunnelId: tunnelId,
+        hostnames: [hostname],
+        service: service,
+      );
+
+  /// Points one tunnel at several hostnames at once.
+  ///
+  /// Only a rename needs this, and only in the middle of one: serving the old
+  /// and the new address together means the drive never stops answering while
+  /// DNS for the new name is being written. Once that record exists the
+  /// ingress is narrowed back to the new hostname alone.
+  Future<void> configureIngressFor({
+    required String accountId,
+    required String tunnelId,
+    required List<String> hostnames,
+    String service = serviceUrl,
+  }) =>
       _send(
         'PUT',
         '/accounts/$accountId/cfd_tunnel/$tunnelId/configurations',
         body: {
           'config': {
             'ingress': [
-              {'hostname': hostname, 'service': service},
+              for (final hostname in hostnames)
+                {'hostname': hostname, 'service': service},
               {'service': 'http_status:404'},
             ],
           },
         },
+      );
+
+  /// Renames a tunnel in place. Its id, its token and its live connection all
+  /// survive, so the drive does not have to reconnect.
+  ///
+  /// A tunnel is named after the drive it serves, so a rename that skipped
+  /// this would leave `ps-<old>` serving `<new>`. That is worse than untidy:
+  /// the leftover is live, and [HostProvisioner.provision] refuses to adopt a
+  /// live tunnel, so the old name would look permanently occupied to the one
+  /// person entitled to re-claim it. Renaming is what actually frees it.
+  Future<void> renameTunnel({
+    required String accountId,
+    required String tunnelId,
+    required String name,
+  }) =>
+      _send(
+        'PATCH',
+        '/accounts/$accountId/cfd_tunnel/$tunnelId',
+        body: {'name': name},
       );
 
   Future<String> tunnelToken({

@@ -153,6 +153,21 @@ class FakeCloudflare {
       return _ok(req, 'tunnel-token-$id');
     }
 
+    if (path.contains('/cfd_tunnel/') && method == 'PATCH') {
+      final id = path.split('/cfd_tunnel/')[1];
+      final name = json['name'] as String;
+      if (tunnels.values.any((t) => t['id'] != id && t['name'] == name)) {
+        return _send(req, 409, {
+          'success': false,
+          'errors': [
+            {'code': 1013, 'message': 'tunnel with name already exists'}
+          ],
+        });
+      }
+      tunnels[id]?['name'] = name;
+      return _ok(req, {'id': id, 'name': name});
+    }
+
     if (path.contains('/cfd_tunnel/') && method == 'DELETE') {
       tunnels.remove(path.split('/cfd_tunnel/')[1]);
       return _ok(req, {'ok': true});
@@ -402,25 +417,143 @@ Future<void> main() async {
   }());
 
   print('\n-- rename keeps the tunnel --');
-  final before = fake.tunnels.entries
+  final moving = fake.tunnels.entries
       .firstWhere((e) => e.value['name'] == 'ps-alishdrive');
   fake.dns.clear();
   await api().upsertCname(
       zoneId: 'zone-1',
       fqdn: 'alishdrive.thapaalish.com.np',
-      content: '${before.key}.cfargotunnel.com');
-  final renamed = await host.rename(
-    from: 'alishdrive',
-    to: 'alishmanandhar',
-    tunnelId: before.key,
-  );
+      content: '${moving.key}.cfargotunnel.com');
+
+  final renamed = await host.rename(from: 'alishdrive', to: 'alishmanandhar');
   check('new hostname returned',
       renamed == 'alishmanandhar.thapaalish.com.np', renamed);
-  check('tunnel untouched', fake.tunnels.containsKey(before.key));
+  check('the same tunnel is still there', fake.tunnels.containsKey(moving.key));
+  check('no new tunnel was created',
+      !fake.tunnels.values.any((t) => t['id'] != moving.key && t['name'] == 'ps-alishmanandhar'));
+  check('the tunnel was renamed too',
+      fake.tunnels[moving.key]!['name'] == 'ps-alishmanandhar',
+      '${fake.tunnels[moving.key]!['name']}');
   check('old name released',
       !fake.dns.any((r) => r['name'] == 'alishdrive.thapaalish.com.np'));
   check('new name published',
       fake.dns.any((r) => r['name'] == 'alishmanandhar.thapaalish.com.np'));
+  check('new record points at the same tunnel',
+      fake.dns
+          .firstWhere((r) => r['name'] == 'alishmanandhar.thapaalish.com.np')['content'] ==
+          '${moving.key}.cfargotunnel.com');
+  check('ingress ends up carrying the new hostname only', () {
+    final ingress = ((fake.tunnels[moving.key]!['ingress']
+        as Map<String, Object?>)['ingress'] as List)
+        .whereType<Map<String, Object?>>()
+        .map((e) => e['hostname'])
+        .whereType<String>()
+        .toList();
+    return ingress.length == 1 &&
+        ingress.single == 'alishmanandhar.thapaalish.com.np';
+  }());
+
+  print('\n-- renaming frees the old name for real --');
+  // The point of renaming the tunnel: ps-alishdrive is gone, so claiming
+  // alishdrive again takes the ordinary path instead of hitting a live
+  // leftover it is not allowed to adopt.
+  fake.tunnels[moving.key]!['status'] = 'healthy';
+  fake.tunnels[moving.key]!['connections'] = [
+    {'id': 'conn-1'}
+  ];
+  final reborn = await host.provision('alishdrive');
+  check('the old name can be claimed again',
+      reborn.hostname == 'alishdrive.thapaalish.com.np', reborn.hostname);
+  check('it got a tunnel of its own',
+      fake.tunnels.values.any((t) => t['name'] == 'ps-alishdrive'));
+  check('the renamed drive was not disturbed',
+      fake.tunnels[moving.key]!['name'] == 'ps-alishmanandhar');
+  fake.tunnels[moving.key]!['status'] = 'inactive';
+  fake.tunnels[moving.key]!['connections'] = <Object?>[];
+
+  print('\n-- rename refuses what it cannot do --');
+  try {
+    await host.rename(from: 'alishmanandhar', to: 'alishmanandhar');
+    check('refuses renaming to the same name', false, 'no error thrown');
+  } on CloudflareError catch (e) {
+    check('refuses renaming to the same name',
+        e.message.contains('already called'), e.message);
+  }
+
+  try {
+    await host.rename(from: 'alishmanandhar', to: 'ab');
+    check('refuses an invalid new name', false, 'no error thrown');
+  } on CloudflareError {
+    check('refuses an invalid new name', true);
+  }
+
+  try {
+    await host.rename(from: 'alishmanandhar', to: 'www');
+    check('refuses a reserved new name', false, 'no error thrown');
+  } on CloudflareError catch (e) {
+    check('refuses a reserved new name', e.message.contains('reserved'),
+        e.message);
+  }
+
+  try {
+    await host.rename(from: 'nosuchdrive', to: 'somewhereelse');
+    check('refuses when no tunnel backs the old name', false, 'no error thrown');
+  } on CloudflareError catch (e) {
+    check('refuses when no tunnel backs the old name',
+        e.message.contains('nothing to'), e.message);
+  }
+
+  try {
+    // alishdrive exists again from the block above, so this is a collision.
+    await host.rename(from: 'alishmanandhar', to: 'alishdrive');
+    check('refuses a name already in use', false, 'no error thrown');
+  } on CloudflareError catch (e) {
+    check('refuses a name already in use', e.isDuplicateTunnel, e.message);
+  }
+  check('a refused rename leaves the tunnel name alone',
+      fake.tunnels[moving.key]!['name'] == 'ps-alishmanandhar',
+      '${fake.tunnels[moving.key]!['name']}');
+
+  print('\n-- a rename that fails rolls back --');
+  final dnsBeforeFailedRename = fake.dns.length;
+  fake.failOn('/dns_records');
+  try {
+    await host.rename(from: 'alishmanandhar', to: 'willnotstick');
+    check('a DNS failure surfaces', false, 'no error thrown');
+  } on CloudflareError {
+    check('a DNS failure surfaces', true);
+  }
+  fake.failures.clear();
+  check('the tunnel name was put back',
+      fake.tunnels[moving.key]!['name'] == 'ps-alishmanandhar',
+      '${fake.tunnels[moving.key]!['name']}');
+  check('ingress was put back to the old hostname only', () {
+    final ingress = ((fake.tunnels[moving.key]!['ingress']
+        as Map<String, Object?>)['ingress'] as List)
+        .whereType<Map<String, Object?>>()
+        .map((e) => e['hostname'])
+        .whereType<String>()
+        .toList();
+    return ingress.length == 1 &&
+        ingress.single == 'alishmanandhar.thapaalish.com.np';
+  }());
+  check('no record was left for the name that did not stick',
+      fake.dns.length == dnsBeforeFailedRename, '${fake.dns.length}');
+  check('the drive still answers at the name it had',
+      fake.dns.any((r) => r['name'] == 'alishmanandhar.thapaalish.com.np'));
+
+  print('\n-- a rename interrupted mid-flight can be retried --');
+  // What an interruption after the tunnel rename looks like: nothing under
+  // the old tunnel name, the new one already there, DNS not yet moved.
+  fake.tunnels[moving.key]!['name'] = 'ps-secondtry';
+  final retried = await host.rename(from: 'alishmanandhar', to: 'secondtry');
+  check('the retry completes', retried == 'secondtry.thapaalish.com.np',
+      retried);
+  check('it found the already-renamed tunnel',
+      fake.tunnels[moving.key]!['name'] == 'ps-secondtry');
+  check('and finished the DNS move',
+      fake.dns.any((r) => r['name'] == 'secondtry.thapaalish.com.np') &&
+          !fake.dns.any((r) => r['name'] == 'alishmanandhar.thapaalish.com.np'));
 
   print('\n-- upsert does not duplicate --');
   fake.dns.clear();

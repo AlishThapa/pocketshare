@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../cloudflare/names.dart';
 import '../native.dart';
 import '../state/drive_controller.dart';
 import '../tunnel/cloudflared.dart';
@@ -111,6 +112,14 @@ class _DriveTabState extends State<DriveTab> with WidgetsBindingObserver {
                 ),
                 onTap: () => _setRecovery(context, !c.recoveryEnabled),
               ),
+            if (c.isHost)
+              PanelTile(
+                icon: Icons.drive_file_rename_outline_rounded,
+                title: 'Change the address',
+                subtitle: 'Move the drive to a different name on the same '
+                    'domain. The old address stops working.',
+                onTap: () => _rename(context),
+              ),
             PanelTile(
               icon: Icons.receipt_long_rounded,
               title: 'Connection log',
@@ -192,6 +201,23 @@ class _DriveTabState extends State<DriveTab> with WidgetsBindingObserver {
           onSecondaryPressed: c.markAutostartDone,
         ),
     ];
+  }
+
+  Future<void> _rename(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final moved = await showDialog<String>(
+      context: context,
+      builder: (_) => _RenameDialog(controller: widget.controller),
+    );
+
+    if (moved != null) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Moved to $moved. Checking that it answers…'),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    }
   }
 
   Future<void> _changeLogin(BuildContext context) async {
@@ -661,6 +687,137 @@ class _ChangeLoginDialogState extends State<_ChangeLoginDialog> {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Asks for a new name, shows what the address will become, and says plainly
+/// what moving costs: the old address is released, not kept as an alias.
+class _RenameDialog extends StatefulWidget {
+  const _RenameDialog({required this.controller});
+
+  final DriveController controller;
+
+  @override
+  State<_RenameDialog> createState() => _RenameDialogState();
+}
+
+class _RenameDialogState extends State<_RenameDialog> {
+  late final String _domain =
+      widget.controller.hostname.split('.').skip(1).join('.');
+  late final String _current = widget.controller.hostname.split('.').first;
+
+  late final TextEditingController _name =
+      TextEditingController(text: _current);
+
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  String get _typed => _name.text.trim().toLowerCase();
+
+  /// Null while the field is usable, so the button and the helper text agree
+  /// on whether there is anything to do.
+  String? get _blocker {
+    if (_typed == _current) return 'That is the name it already has.';
+    return DriveName.problem(_typed);
+  }
+
+  Future<void> _save() async {
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+
+    final ok = await widget.controller.renameDrive(_typed);
+
+    if (!mounted) return;
+    if (ok) {
+      Navigator.of(context).pop(widget.controller.hostname);
+    } else {
+      setState(() {
+        _saving = false;
+        _error = widget.controller.errorMessage;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final blocker = _blocker;
+
+    return AlertDialog(
+      title: const Text('Change the address'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'The drive keeps its files, its login and its invite codes. '
+              'Only the address changes.\n\n'
+              '$_current.$_domain stops working and becomes free for anyone '
+              'to claim, so anyone you gave it to needs the new one.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 18),
+            TextField(
+              controller: _name,
+              autocorrect: false,
+              enabled: !_saving,
+              autofocus: true,
+              textCapitalization: TextCapitalization.none,
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9-]')),
+              ],
+              decoration: InputDecoration(
+                labelText: 'New name',
+                suffixText: '.$_domain',
+                helperText: blocker ?? 'Will answer at $_typed.$_domain',
+                helperMaxLines: 2,
+                border: const OutlineInputBorder(),
+              ),
+              onChanged: (_) => setState(() => _error = null),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 14),
+              Text(
+                _error!,
+                style: TextStyle(color: theme.colorScheme.error),
+              ),
+            ],
+            if (_saving) ...[
+              const SizedBox(height: 14),
+              Text(
+                'Moving the address. Do not close the app.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _saving || blocker != null ? null : _save,
+          child: _saving
+              ? const SizedBox(
+                  height: 18,
+                  width: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Move'),
         ),
       ],
     );

@@ -110,33 +110,126 @@ class HostProvisioner {
     }
   }
 
-  /// Moves a drive to a new name, keeping its tunnel.
+  /// Moves a drive to a new name on the same domain, keeping its tunnel.
   ///
-  /// Only DNS changes, so the tunnel token stays valid and the running
-  /// service does not have to reconnect.
-  Future<String> rename({
-    required String from,
-    required String to,
-    required String tunnelId,
-  }) async {
+  /// The tunnel's id and token are unchanged, so the running cloudflared
+  /// keeps its connection and the phone keeps the only credential it has.
+  /// What moves is the tunnel's name, its ingress hostname, and DNS.
+  ///
+  /// The old name is left genuinely free: its DNS record is deleted and the
+  /// tunnel stops carrying it, so re-claiming it later takes the ordinary
+  /// path rather than running into a live leftover.
+  ///
+  /// Returns the new hostname. Needs the Cloudflare token, so this is the
+  /// host path only — a guest's claim lives on the provisioning Worker, which
+  /// has no rename of its own.
+  Future<String> rename({required String from, required String to}) async {
+    final source = DriveName.normalize(from);
     final target = DriveName.normalize(to);
+
     final problem = DriveName.problem(target);
     if (problem != null) throw CloudflareError(problem);
+    if (source == target) {
+      throw CloudflareError('The drive is already called $target.');
+    }
 
-    final hostname = '$target.$zone';
-    await api.configureIngress(
+    final oldHost = '$source.$zone';
+    final newHost = '$target.$zone';
+    final oldTunnel = DriveName.tunnelName(source);
+    final newTunnel = DriveName.tunnelName(target);
+
+    final (tunnelId, alreadyRenamed) = await _tunnelToMove(oldTunnel, newTunnel);
+
+    if (!alreadyRenamed) {
+      // First, because it is the step that can discover the new name is
+      // taken, and the only one that changes nothing when it fails.
+      await api.renameTunnel(
+        accountId: accountId,
+        tunnelId: tunnelId,
+        name: newTunnel,
+      );
+    }
+
+    try {
+      // Both addresses at once, so the drive keeps answering on the old one
+      // until the new record is live. Without this there is a gap where
+      // neither works: ingress no longer matches the old hostname and DNS
+      // for the new one has not been written yet.
+      await api.configureIngressFor(
+        accountId: accountId,
+        tunnelId: tunnelId,
+        hostnames: [newHost, oldHost],
+      );
+      await api.upsertCname(
+        zoneId: zoneId,
+        fqdn: newHost,
+        content: '$tunnelId.cfargotunnel.com',
+      );
+    } catch (_) {
+      // Nothing published yet, so put the tunnel back as it was and let the
+      // caller report a move that simply did not happen.
+      await _undo(tunnelId, oldTunnel, oldHost, renamed: !alreadyRenamed);
+      rethrow;
+    }
+
+    // Past here the new address exists and works. The rest is releasing the
+    // old one, and a failure must not be reported as a failed rename: the
+    // move happened. Retrying rename() picks up where this left off, which is
+    // what _tunnelToMove's second lookup is for.
+    await api.configureIngressFor(
       accountId: accountId,
       tunnelId: tunnelId,
-      hostname: hostname,
+      hostnames: [newHost],
     );
-    await api.upsertCname(
-      zoneId: zoneId,
-      fqdn: hostname,
-      content: '$tunnelId.cfargotunnel.com',
+    await api.deleteCname(zoneId: zoneId, fqdn: oldHost);
+
+    return newHost;
+  }
+
+  /// The tunnel a rename should move, and whether it has already been renamed.
+  ///
+  /// Looks for the old name first, then the new one. The second lookup is how
+  /// a retry works: a rename interrupted after the tunnel was renamed but
+  /// before DNS was written leaves nothing under the old name, and asking
+  /// Cloudflare to rename a tunnel to the name it already has is not
+  /// something to rely on.
+  Future<(String, bool)> _tunnelToMove(String oldTunnel, String newTunnel) async {
+    final current = await api.findTunnel(accountId: accountId, name: oldTunnel);
+    if (current != null) return (current.id, false);
+
+    final moved = await api.findTunnel(accountId: accountId, name: newTunnel);
+    if (moved != null) return (moved.id, true);
+
+    throw CloudflareError(
+      'No tunnel named $oldTunnel on this account, so there is nothing to '
+      'rename. The drive may have been set up on another phone, or the '
+      'tunnel deleted in the Cloudflare dashboard.',
     );
-    // Only now release the old name, so a failure above leaves the drive
-    // reachable at the address it already had.
-    await api.deleteCname(zoneId: zoneId, fqdn: '${DriveName.normalize(from)}.$zone');
-    return hostname;
+  }
+
+  /// Best effort return to the pre-rename state. The original failure is what
+  /// the user needs to hear, so nothing in here is allowed to replace it.
+  Future<void> _undo(
+    String tunnelId,
+    String oldTunnel,
+    String oldHost, {
+    required bool renamed,
+  }) async {
+    try {
+      await api.configureIngressFor(
+        accountId: accountId,
+        tunnelId: tunnelId,
+        hostnames: [oldHost],
+      );
+    } catch (_) {}
+
+    if (!renamed) return;
+    try {
+      await api.renameTunnel(
+        accountId: accountId,
+        tunnelId: tunnelId,
+        name: oldTunnel,
+      );
+    } catch (_) {}
   }
 }

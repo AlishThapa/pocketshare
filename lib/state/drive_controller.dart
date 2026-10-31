@@ -609,6 +609,79 @@ class DriveController extends ChangeNotifier {
     }
   }
 
+  /// Moves the drive to a new name on the same domain.
+  ///
+  /// Host path only: it spends the Cloudflare token, which a guest does not
+  /// have. The tunnel is kept, so the phone's tunnel token stays valid and
+  /// nothing has to be re-provisioned.
+  ///
+  /// The drive is restarted afterwards rather than left running. It would
+  /// keep serving — the tunnel never dropped — but the service read the old
+  /// hostname out of secure storage when it started and is the thing that
+  /// proves the address answers. Restarting makes it prove the new one.
+  Future<bool> renameDrive(String rawName) async {
+    final current = claim;
+    if (current == null) return false;
+
+    errorMessage = null;
+    notifyListeners();
+
+    final token = await Secrets.apiToken();
+    final zone = await Secrets.zone();
+    final zoneId = await Secrets.zoneId();
+    final accountId = await Secrets.accountId();
+
+    if (token == null || zone == null || zoneId == null || accountId == null) {
+      errorMessage = 'Renaming needs the Cloudflare connection that made this '
+          'address, and this phone does not have it.';
+      notifyListeners();
+      return false;
+    }
+
+    final from = current.hostname.split('.').first;
+    final problem = DriveName.problem(rawName);
+    if (problem != null) {
+      errorMessage = problem;
+      notifyListeners();
+      return false;
+    }
+
+    final api = CloudflareApi(token: token);
+    try {
+      final host = HostProvisioner(
+        api: api,
+        accountId: accountId,
+        zoneId: zoneId,
+        zone: zone,
+      );
+      final hostname = await host.rename(from: from, to: rawName);
+
+      claim = await provisioner.adopt(
+        hostname: hostname,
+        tunnelToken: current.tunnelToken,
+      );
+      notifyListeners();
+
+      // The backup carries the hostname, so an un-refreshed one would restore
+      // this phone onto the address it just gave up.
+      await backUpForRecovery();
+
+      await stopDrive();
+      await startDrive();
+      return true;
+    } on CloudflareError catch (e) {
+      errorMessage = e.isDuplicateTunnel
+          ? 'A tunnel named ${DriveName.tunnelName(rawName)} already exists '
+              'on your account, so that name is in use. Pick another, or '
+              'delete it in the Cloudflare dashboard.'
+          : e.message;
+      notifyListeners();
+      return false;
+    } finally {
+      api.close();
+    }
+  }
+
   Future<bool> claimName({required String name, required String inviteCode}) async {
     errorMessage = null;
     notifyListeners();
