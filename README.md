@@ -382,6 +382,48 @@ prove the new one.
 This is the host path only. A guest's claim lives in the Worker's KV, which
 has no rename, so an invited phone cannot move its name — see Known gaps.
 
+## Disconnecting
+
+Giving the address back and returning to the setup screen. The whole design is
+in the order, because releasing the name is authorised by credentials the same
+operation is about to destroy:
+
+```
+stop the drive            Cloudflare will not delete a connected tunnel
+release the name          guest: POST /release; host: its own API token
+delete the recovery blob  or a reinstall would restore the claim just given up
+wipe the local state      claim, device id, login, sessions, invites, token
+back to the setup screen
+```
+
+Nothing before the last step touches local storage, so a release that fails
+leaves the drive stopped and everything else intact, and the user can retry. A
+wipe-first design that then failed to release would leave a name claimed
+forever by a phone that could no longer prove it owned it.
+
+**The files are not touched.** They live on the card, outside anything the
+teardown knows how to delete, and they survive a disconnect exactly as they
+survive an uninstall. The trash goes with them — its index is a file under
+`.pocketshare/trash`, not a table — so only `account`, `session` and `invite`
+are emptied, and the database itself is kept.
+
+The Worker drops its KV row **last**, only once Cloudflare has let go of both
+the DNS record and the tunnel. Freeing the name earlier would hand the next
+claimant a name whose `ps-<name>` tunnel already exists, which `/claim` has no
+way to recover from. A partial failure keeps the row, which is the retryable
+side. The invite use is refunded: releasing a name is giving something up, so
+there is nothing to farm, and charging a second code to undo an allowed
+decision is just a trap.
+
+The host path differs in one way. Cloudflare refuses to delete a tunnel that
+still shows a connection, and one does for a while after cloudflared exits, so
+deletion is retried. If it still will not go, the disconnect completes anyway
+and says so: the address is already released, and a dormant `ps-<name>` is
+precisely what `provision()` adopts, so re-claiming the name still works.
+
+Browser sign-out is a different thing and already existed: `POST
+/api/auth/logout` drops one session. Disconnecting drops all of them.
+
 ## Known gaps
 
 - **An invited phone cannot change its address.** Renaming spends the
@@ -398,7 +440,9 @@ has no rename, so an invited phone cannot move its name — see Known gaps.
 - **Uninstalling forgets the drive, but not the name.** The claim, the login,
   invite codes and the Cloudflare token all live in app storage, which Android
   wipes, and `allowBackup="false"` means there is no backup to restore from.
-  Files under `/storage/emulated/0/PocketShare` survive. The address comes
+  Files under `/storage/emulated/0/PocketShare` survive. Disconnecting is the
+  deliberate version of this and does release the name — see Disconnecting.
+  The address comes
   back either way: a guest is recognised by a device id derived from
   ANDROID_ID, which outlives the app, and a host re-claiming its own name
   adopts the tunnel still standing on the account. What does not come back is

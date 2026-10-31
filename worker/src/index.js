@@ -43,6 +43,9 @@ export default {
       if (request.method === 'POST' && url.pathname === '/rebind') {
         return await rebind(request, env);
       }
+      if (request.method === 'POST' && url.pathname === '/release') {
+        return await release(request, env);
+      }
       if (url.pathname === '/recovery') {
         if (request.method === 'GET') return await recoveryGet(url, env);
         if (request.method === 'PUT') return await recoveryPut(request, env);
@@ -207,6 +210,63 @@ async function rebind(request, env) {
     JSON.stringify({ ...existing, deviceId: newDeviceId, reboundAt: Date.now() }),
   );
   return json({ ok: true });
+}
+
+/**
+ * Gives a name back: its DNS record, its tunnel and its reservation.
+ *
+ * This is what "disconnect" means on the guest side. The device proves itself
+ * the same way it does everywhere else here, by knowing the device id its
+ * claim was made with — the same value that already lets it re-claim the name
+ * outright, so this grants nothing new.
+ *
+ * Order matters and the failure mode is deliberate. The KV row is deleted
+ * last, only once Cloudflare has actually let go of both resources. Dropping
+ * it first would free the name while a tunnel called ps-<name> was still
+ * standing on the account, and the next person to claim it would hit a
+ * duplicate-name refusal this Worker has no way to recover from. Leaving the
+ * row behind after a partial failure is the safe side: the owner can retry.
+ *
+ * The invite use is handed back. Releasing a name is giving something up, so
+ * there is nothing to farm by doing it, and charging someone a second code to
+ * undo a decision they are allowed to make is just a trap.
+ */
+async function release(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const name = String(body.name || '').toLowerCase().trim();
+  const deviceId = String(body.deviceId || '').trim();
+
+  if (!name || !deviceId) return json({ error: 'missing fields' }, 400);
+
+  const existing = await env.CLAIMS.get(`name:${name}`, 'json');
+  // Already released. A retry after a reply that never arrived is a success,
+  // not a 404: the caller wanted the name gone and the name is gone.
+  if (!existing) return json({ ok: true, released: false });
+
+  if (existing.deviceId !== deviceId) {
+    return json({ error: 'that claim belongs to another device' }, 403);
+  }
+
+  // DNS first: it is the half the user can see, and it stops the address
+  // answering immediately even if the tunnel takes another moment.
+  await deleteDnsRecord(env, name);
+  if (existing.tunnelId) await deleteTunnel(env, existing.tunnelId);
+
+  await env.CLAIMS.delete(`name:${name}`);
+  if (existing.inviteCode) await refundInvite(env, existing.inviteCode);
+
+  return json({ ok: true, released: true });
+}
+
+/** Gives back the use a claim consumed, never dropping below zero. */
+async function refundInvite(env, code) {
+  const key = `invite:${code}`;
+  const invite = await env.CLAIMS.get(key, 'json');
+  if (!invite) return;
+  await env.CLAIMS.put(
+    key,
+    JSON.stringify({ ...invite, uses: Math.max(0, (invite.uses || 0) - 1) }),
+  );
 }
 
 // --- reinstall recovery ------------------------------------------------------
@@ -446,6 +506,21 @@ async function upsertDnsRecord(env, name, target) {
     method: 'POST',
     body: JSON.stringify(record),
   });
+}
+
+/** Removes the CNAME for a name, if one is there. */
+async function deleteDnsRecord(env, name) {
+  const zone = await zoneId(env);
+  const fqdn = `${name}.${env.ROOT_DOMAIN}`;
+  const existing = await cf(
+    env,
+    `/zones/${zone}/dns_records?type=CNAME&name=${encodeURIComponent(fqdn)}`,
+  );
+  for (const record of existing) {
+    await cf(env, `/zones/${zone}/dns_records/${record.id}`, {
+      method: 'DELETE',
+    });
+  }
 }
 
 function json(body, status = 200) {

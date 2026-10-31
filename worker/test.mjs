@@ -263,6 +263,103 @@ console.log('\n-- /recovery --');
     Object.keys(stored).join(','));
 }
 
+console.log('\n-- /release --');
+{
+  const post = (e, path, payload) =>
+    worker.fetch(new Request(`https://provision.example${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }), e);
+
+  // Stands in for api.cloudflare.com, recording what the Worker asked it to
+  // do so the test can assert the resources were actually given back rather
+  // than just the KV row dropped.
+  const realFetch = globalThis.fetch;
+  let cfCalls = [];
+  let cfFails = null;
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname + new URL(url).search;
+    cfCalls.push(`${init.method || 'GET'} ${path}`);
+    if (cfFails && path.includes(cfFails)) {
+      return new Response(
+        JSON.stringify({ success: false, errors: [{ code: 1003, message: 'tunnel has active connections' }] }),
+        { status: 400 },
+      );
+    }
+    const result = path.includes('/dns_records?') ? [{ id: 'rec-1' }] : {};
+    return new Response(JSON.stringify({ success: true, errors: [], result }), { status: 200 });
+  };
+
+  const seed = () => {
+    const e = env({
+      'name:tests': { deviceId: 'this-phone', tunnelId: 'tun-7', inviteCode: 'ABC123' },
+      'invite:ABC123': { uses: 1, maxUses: 3, label: 'family' },
+    });
+    e.CF_ZONE_ID = 'zone-1';
+    e.CF_ACCOUNT_ID = 'acct-1';
+    return e;
+  };
+
+  let e = seed();
+  cfCalls = [];
+  let [status, out] = await body(await post(e, '/release', {
+    name: 'tests', deviceId: 'this-phone',
+  }));
+  check('a claim is released', status === 200 && out.released === true, `${status} ${JSON.stringify(out)}`);
+  check('the reservation is gone', (await e.CLAIMS.get('name:tests')) === null);
+  check('the DNS record was deleted',
+    cfCalls.some((c) => c.startsWith('DELETE /client/v4/zones/zone-1/dns_records/')), cfCalls.join(' | '));
+  check('the tunnel was deleted',
+    cfCalls.some((c) => c === 'DELETE /client/v4/accounts/acct-1/cfd_tunnel/tun-7'), cfCalls.join(' | '));
+  check('the invite use was handed back',
+    (await e.CLAIMS.get('invite:ABC123', 'json')).uses === 0);
+
+  e = seed();
+  [status, out] = await body(await post(e, '/release', {
+    name: 'tests', deviceId: 'some-other-phone',
+  }));
+  check('another device cannot release it', status === 403, `${status}`);
+  check('and the claim survives', (await e.CLAIMS.get('name:tests')) !== null);
+
+  // A reply that never arrived, retried. The caller wanted the name gone and
+  // the name is gone, so this is a success, not a 404.
+  e = seed();
+  await e.CLAIMS.delete('name:tests');
+  [status, out] = await body(await post(e, '/release', {
+    name: 'tests', deviceId: 'this-phone',
+  }));
+  check('releasing an already-released name succeeds',
+    status === 200 && out.ok === true && out.released === false, `${status} ${JSON.stringify(out)}`);
+
+  [status] = await body(await post(seed(), '/release', { name: 'tests' }));
+  check('a release with no device id is refused', status === 400, `${status}`);
+
+  // The case that matters most: if Cloudflare will not let the tunnel go,
+  // the name must stay claimed. Freeing it here would hand the next person a
+  // name whose tunnel already exists, which /claim cannot recover from.
+  e = seed();
+  cfFails = '/cfd_tunnel/';
+  [status] = await body(await post(e, '/release', {
+    name: 'tests', deviceId: 'this-phone',
+  }));
+  check('a failed tunnel delete does not free the name', status === 502, `${status}`);
+  check('the reservation is kept for a retry',
+    (await e.CLAIMS.get('name:tests')) !== null);
+  check('the invite use is not refunded either',
+    (await e.CLAIMS.get('invite:ABC123', 'json')).uses === 1);
+  cfFails = null;
+
+  // Refunding must not run a code below zero, or an invite would gain uses.
+  e = seed();
+  await e.CLAIMS.put('invite:ABC123', JSON.stringify({ uses: 0, maxUses: 3 }));
+  await post(e, '/release', { name: 'tests', deviceId: 'this-phone' });
+  check('a refund never drops below zero',
+    (await e.CLAIMS.get('invite:ABC123', 'json')).uses === 0);
+
+  globalThis.fetch = realFetch;
+}
+
 console.log('\n-- unknown routes --');
 {
   const [status] = await body(await call(env({}), '/nope'));

@@ -127,6 +127,14 @@ class _DriveTabState extends State<DriveTab> with WidgetsBindingObserver {
               onTap: () => _showLogs(context),
             ),
             PanelTile(
+              icon: Icons.link_off_rounded,
+              title: 'Disconnect this drive',
+              subtitle: 'Give up ${c.hostname} and start over. Your files '
+                  'stay on this phone.',
+              danger: true,
+              onTap: () => _disconnect(context),
+            ),
+            PanelTile(
               icon: c.isLive ? Icons.stop_rounded : Icons.play_arrow_rounded,
               title: c.isLive ? 'Stop the drive' : 'Start the drive',
               subtitle: c.isLive
@@ -201,6 +209,30 @@ class _DriveTabState extends State<DriveTab> with WidgetsBindingObserver {
           onSecondaryPressed: c.markAutostartDone,
         ),
     ];
+  }
+
+  Future<void> _disconnect(BuildContext context) async {
+    final c = widget.controller;
+    final messenger = ScaffoldMessenger.of(context);
+    final gone = await showDialog<bool>(
+      context: context,
+      builder: (_) => _DisconnectDialog(controller: c),
+    );
+
+    if (gone == true) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            c.tunnelOutlivedDisconnect
+                ? 'Address released. Its tunnel was still connected and is '
+                    'still on your Cloudflare account; it is dormant and will '
+                    'be reused if you claim the name again.'
+                : 'Disconnected. Your files are untouched.',
+          ),
+          duration: const Duration(seconds: 8),
+        ),
+      );
+    }
   }
 
   Future<void> _rename(BuildContext context) async {
@@ -825,6 +857,145 @@ class _RenameDialogState extends State<_RenameDialog> {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Text('Move'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Confirms giving the address up.
+///
+/// It asks for the name to be typed. That is not ceremony: this is the one
+/// action in the app that hands something back to the world, and the tile
+/// that opens it sits one row above "Stop the drive", which sounds similar
+/// and undoes itself.
+class _DisconnectDialog extends StatefulWidget {
+  const _DisconnectDialog({required this.controller});
+
+  final DriveController controller;
+
+  @override
+  State<_DisconnectDialog> createState() => _DisconnectDialogState();
+}
+
+class _DisconnectDialogState extends State<_DisconnectDialog> {
+  final _typed = TextEditingController();
+  bool _working = false;
+  String? _error;
+
+  late final String _name = widget.controller.hostname.split('.').first;
+
+  @override
+  void dispose() {
+    _typed.dispose();
+    super.dispose();
+  }
+
+  bool get _confirmed => _typed.text.trim().toLowerCase() == _name;
+
+  Future<void> _go() async {
+    setState(() {
+      _working = true;
+      _error = null;
+    });
+
+    final ok = await widget.controller.disconnectDrive();
+
+    if (!mounted) return;
+    if (ok) {
+      Navigator.of(context).pop(true);
+    } else {
+      setState(() {
+        _working = false;
+        _error = widget.controller.errorMessage;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    return AlertDialog(
+      title: const Text('Disconnect this drive'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Your files stay exactly where they are, on this phone. '
+              'Nothing in ${widget.controller.driveRootPath ?? 'your drive '
+                  'folder'} is deleted.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'What goes: the address ${widget.controller.hostname}, released '
+              'for anyone to claim; your login and everyone signed in on a '
+              'browser; your invite codes; the reinstall backup'
+              '${widget.controller.isHost ? '; and this phone\'s saved '
+                  'Cloudflare connection' : ''}.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              widget.controller.isHost
+                  ? 'You can set the drive up again afterwards on any name '
+                      'your domain allows.'
+                  : 'To come back you need an invite code again — or you can '
+                      'set up your own domain instead.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 18),
+            TextField(
+              controller: _typed,
+              autocorrect: false,
+              enabled: !_working,
+              autofocus: true,
+              textCapitalization: TextCapitalization.none,
+              decoration: InputDecoration(
+                labelText: 'Type $_name to confirm',
+                border: const OutlineInputBorder(),
+              ),
+              onChanged: (_) => setState(() => _error = null),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 14),
+              Text(_error!, style: TextStyle(color: scheme.error)),
+            ],
+            if (_working) ...[
+              const SizedBox(height: 14),
+              AnimatedBuilder(
+                animation: widget.controller,
+                builder: (context, _) => Text(
+                  widget.controller.disconnectState ?? 'Disconnecting…',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _working ? null : () => Navigator.of(context).pop(false),
+          child: const Text('Keep it'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: scheme.error,
+            foregroundColor: scheme.onError,
+          ),
+          onPressed: _working || !_confirmed ? null : _go,
+          child: _working
+              ? const SizedBox(
+                  height: 18,
+                  width: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Disconnect'),
         ),
       ],
     );

@@ -275,6 +275,26 @@ Future<void> main() async {
 
   client.close(force: true);
   await server.stop();
+  print('\n-- disconnecting forgets who owns the drive --');
+  // The point of the disconnect teardown: nobody can sign in afterwards, and
+  // everyone already signed in is out, while nothing about the files moves.
+  const liveSession = 'a-session-token-hash';
+  store.putSession(liveSession, 'a browser');
+
+  final before = store.account?.username;
+  check('there was an account', before == 'alish', '$before');
+  check('there was a live session', store.touchSession(liveSession));
+
+  store.wipeCredentials();
+
+  check('the account is gone', !store.hasAccount);
+  check('account() reads as empty', store.account == null);
+  check('the session no longer validates', !store.touchSession(liveSession));
+  check('a new owner can be created afterwards', await () async {
+    await auth.createAccount(username: 'someoneelse', password: 'another-long-pass');
+    return store.account?.username == 'someoneelse';
+  }());
+
   store.close();
   tmp.deleteSync(recursive: true);
 

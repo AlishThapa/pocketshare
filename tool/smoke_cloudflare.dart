@@ -555,6 +555,64 @@ Future<void> main() async {
       fake.dns.any((r) => r['name'] == 'secondtry.thapaalish.com.np') &&
           !fake.dns.any((r) => r['name'] == 'alishmanandhar.thapaalish.com.np'));
 
+  print('\n-- releasing a name --');
+  fake.dns.clear();
+  final living = fake.tunnels.entries
+      .firstWhere((e) => e.value['name'] == 'ps-secondtry');
+  await api().upsertCname(
+      zoneId: 'zone-1',
+      fqdn: 'secondtry.thapaalish.com.np',
+      content: '${living.key}.cfargotunnel.com');
+
+  final letGo = await host.release('secondtry');
+  check('release reports the tunnel went too', letGo);
+  check('the DNS record is gone',
+      !fake.dns.any((r) => r['name'] == 'secondtry.thapaalish.com.np'));
+  check('the tunnel is gone', !fake.tunnels.containsKey(living.key));
+  check('the name is claimable again after release', await () async {
+    final r = await host.provision('secondtry');
+    return r.hostname == 'secondtry.thapaalish.com.np';
+  }());
+
+  print('\n-- releasing a name that has no tunnel --');
+  // Half-released already, or set up on another phone. The DNS record still
+  // has to go, and the absence of a tunnel is not an error.
+  fake.dns.clear();
+  await api().upsertCname(
+      zoneId: 'zone-1',
+      fqdn: 'orphan.thapaalish.com.np',
+      content: 'tun-gone.cfargotunnel.com');
+  check('release succeeds with no tunnel to delete',
+      await host.release('orphan'));
+  check('but the record is still released',
+      !fake.dns.any((r) => r['name'] == 'orphan.thapaalish.com.np'));
+
+  print('\n-- a tunnel that will not die --');
+  // Cloudflare refuses to delete a tunnel that still shows a connection, and
+  // one does for a little while after cloudflared exits. The address must go
+  // regardless: a dormant leftover is adoptable, an address that will not let
+  // go is not something the user can fix.
+  final stubborn = await host.provision('stubborn');
+  check('set up a drive to release', stubborn.hostname.startsWith('stubborn'));
+  fake.failOn('/cfd_tunnel/');
+  final partly = await host.release(
+    'stubborn',
+    attempts: 2,
+    retryAfter: const Duration(milliseconds: 10),
+  );
+  fake.failures.clear();
+  check('release reports the tunnel survived', !partly);
+  check('the address was still released',
+      !fake.dns.any((r) => r['name'] == 'stubborn.thapaalish.com.np'));
+  check('the leftover tunnel is still on the account',
+      fake.tunnels.values.any((t) => t['name'] == 'ps-stubborn'));
+  check('and it is dormant, so the name can be claimed again', await () async {
+    final r = await host.provision('stubborn');
+    return r.hostname == 'stubborn.thapaalish.com.np';
+  }());
+  check('re-claiming adopted the leftover rather than making another',
+      fake.tunnels.values.where((t) => t['name'] == 'ps-stubborn').length == 1);
+
   print('\n-- upsert does not duplicate --');
   fake.dns.clear();
   for (var i = 0; i < 3; i++) {

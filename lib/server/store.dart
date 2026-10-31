@@ -115,6 +115,17 @@ class DriveStore {
   /// Invalidates every browser session. Used after a password change.
   void dropAllSessions() => _db.execute('DELETE FROM session');
 
+  /// Forgets who owns this drive: the account and every signed-in browser.
+  ///
+  /// Only for disconnecting. The database itself is kept rather than deleted,
+  /// because the drive's files and its trash index live on the card and are
+  /// none of this file's business — a disconnect gives up an address, not
+  /// somebody's photos.
+  void wipeCredentials() {
+    _db.execute('DELETE FROM session');
+    _db.execute('DELETE FROM account');
+  }
+
   void close() => _db.dispose();
 
   static int _now() => DateTime.now().millisecondsSinceEpoch;

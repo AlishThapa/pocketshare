@@ -154,6 +154,22 @@ void main() {
           1);
   check('nothing bad was written', picky.list().length == 1);
 
+  print('\n-- disconnecting drops every code --');
+  // The codes name a hostname that is about to stop existing. Keeping them
+  // would hand people an address that now answers for someone else.
+  final leaving = InviteStore(sqlite3.openInMemory());
+  leaving.create(label: 'family', maxUses: 3);
+  leaving.create(label: 'work');
+  final spent = leaving.create(label: 'spent');
+  leaving.consume(spent.code);
+  check('codes exist before the disconnect', leaving.list().length == 3);
+  leaving.clear();
+  check('none survive it', leaving.list().isEmpty);
+  check('a code can be made again afterwards',
+      leaving.create(label: 'new start').code.isNotEmpty);
+  check('and the old ones are not findable',
+      leaving.find(spent.code) == null);
+
   print('\n$passed passed, $failed failed\n');
   if (failed > 0) exitCode = 1;
 }

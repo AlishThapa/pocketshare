@@ -704,6 +704,134 @@ class DriveController extends ChangeNotifier {
     }
   }
 
+  /// What a disconnect is doing right now, shown while it runs. Null when idle.
+  String? disconnectState;
+
+  /// Set when the address was released but its tunnel outlived the attempt.
+  /// Not a failure — see [HostProvisioner.release] — but worth saying.
+  bool tunnelOutlivedDisconnect = false;
+
+  /// Gives the address up and returns this phone to the setup screen.
+  ///
+  /// The files are not touched. They live on the card, outside anything this
+  /// method knows how to delete, and they survive a disconnect exactly as
+  /// they survive an uninstall. What goes is the claim, the login, the
+  /// browser sessions, the invite codes, the recovery backup and — for a
+  /// host — the stored Cloudflare connection.
+  ///
+  /// The order is the whole design. Releasing the name is authorised by
+  /// credentials this phone is about to throw away, so every remote step
+  /// happens first and the local wipe happens only once the address is
+  /// actually gone. Wiping first and failing to release would leave a name
+  /// claimed forever by a phone that can no longer prove it owns it.
+  Future<bool> disconnectDrive() async {
+    final current = claim;
+    if (current == null) return false;
+
+    errorMessage = null;
+    tunnelOutlivedDisconnect = false;
+    disconnectState = 'Stopping the drive…';
+    notifyListeners();
+
+    // Before anything else: Cloudflare will not delete a tunnel that still
+    // has a connection, and the drive is holding one open right now.
+    await stopDrive();
+
+    final name = current.hostname.split('.').first;
+    disconnectState = 'Releasing ${current.hostname}…';
+    notifyListeners();
+
+    try {
+      if (isHost) {
+        if (!await _releaseAsHost(name)) return false;
+      } else {
+        await provisioner.release(name);
+      }
+    } on ProvisionError catch (e) {
+      return _disconnectFailed(e.message);
+    } catch (_) {
+      return _disconnectFailed(
+        'Could not reach the signup service to give the address up. The '
+        'drive is stopped; try again when you have a connection.',
+      );
+    }
+
+    disconnectState = 'Clearing this phone…';
+    notifyListeners();
+
+    // The backup names the address that no longer exists, and restoring it
+    // later would put this phone back onto a claim it has given up.
+    await vault.forget();
+    recoveryEnabled = false;
+    await _settings.delete(key: _kRecoveryOn);
+
+    _store?.wipeCredentials();
+    _inviteStore?.clear();
+    invites = const [];
+
+    await provisioner.forgetEverything();
+    if (isHost) await Secrets.disconnectCloudflare();
+
+    claim = null;
+    isHost = false;
+    cfZones = const [];
+    cfZone = null;
+    cfAccountId = null;
+    _pendingToken = null;
+    tunnelState = TunnelState.stopped;
+    tunnelError = null;
+    tunnelLogs = const [];
+    disconnectState = null;
+    stage = SetupStage.choosePath;
+    notifyListeners();
+    return true;
+  }
+
+  /// Releases a host's name with its own Cloudflare token.
+  ///
+  /// Returns false only when nothing could be released at all. A tunnel that
+  /// survives is recorded and carried on from: the address is gone, and the
+  /// leftover is dormant, which is the case [HostProvisioner.provision]
+  /// already adopts.
+  Future<bool> _releaseAsHost(String name) async {
+    final token = await Secrets.apiToken();
+    final zone = await Secrets.zone();
+    final zoneId = await Secrets.zoneId();
+    final accountId = await Secrets.accountId();
+
+    if (token == null || zone == null || zoneId == null || accountId == null) {
+      return _disconnectFailed(
+        'This phone no longer has the Cloudflare connection that made the '
+        'address, so it cannot give it back. Remove the DNS record and the '
+        'tunnel in the Cloudflare dashboard instead.',
+      );
+    }
+
+    final api = CloudflareApi(token: token);
+    try {
+      final host = HostProvisioner(
+        api: api,
+        accountId: accountId,
+        zoneId: zoneId,
+        zone: zone,
+      );
+      tunnelOutlivedDisconnect = !await host.release(name);
+      return true;
+    } on CloudflareError catch (e) {
+      return _disconnectFailed(e.message);
+    } finally {
+      api.close();
+    }
+  }
+
+  /// Leaves the drive stopped but otherwise untouched, so a retry can work.
+  bool _disconnectFailed(String message) {
+    errorMessage = message;
+    disconnectState = null;
+    notifyListeners();
+    return false;
+  }
+
   Future<bool> claimName({required String name, required String inviteCode}) async {
     errorMessage = null;
     notifyListeners();

@@ -186,6 +186,45 @@ class HostProvisioner {
     return newHost;
   }
 
+  /// Gives a name back: its DNS record first, then its tunnel.
+  ///
+  /// DNS goes first because it is the half the user can see — the address
+  /// stops answering at once, which is what they asked for — and because a
+  /// tunnel takes a moment to become deletable.
+  ///
+  /// Cloudflare refuses to delete a tunnel that still has a connection, and
+  /// one that was running seconds ago still looks connected for a little
+  /// while after cloudflared exits. So deletion is retried rather than
+  /// reported as a failure on the first refusal.
+  ///
+  /// Returns whether the tunnel went as well. False is not a failed
+  /// disconnect: the address is already gone, and a dormant leftover named
+  /// `ps-<name>` is exactly what [provision] adopts, so re-claiming the name
+  /// still works. It is worth telling the user about, not worth stopping for.
+  Future<bool> release(
+    String rawName, {
+    int attempts = 5,
+    Duration retryAfter = const Duration(seconds: 3),
+  }) async {
+    final name = DriveName.normalize(rawName);
+    await api.deleteCname(zoneId: zoneId, fqdn: '$name.$zone');
+
+    final tunnel =
+        await api.findTunnel(accountId: accountId, name: DriveName.tunnelName(name));
+    if (tunnel == null) return true;
+
+    for (var attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        await api.deleteTunnel(accountId: accountId, tunnelId: tunnel.id);
+        return true;
+      } on CloudflareError {
+        if (attempt == attempts) return false;
+        await Future<void>.delayed(retryAfter);
+      }
+    }
+    return false;
+  }
+
   /// The tunnel a rename should move, and whether it has already been renamed.
   ///
   /// Looks for the old name first, then the new one. The second lookup is how

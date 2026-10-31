@@ -205,6 +205,34 @@ class Provisioner {
     return Claim(hostname: hostname, tunnelToken: tunnelToken, reused: false);
   }
 
+  /// Gives the name back, so it is free for anyone — including this phone,
+  /// later, through the ordinary invite path.
+  ///
+  /// Authorised by the device id, which is the same secret that already lets
+  /// this phone re-claim the name. Must run before the local credentials are
+  /// cleared, since clearing them is what throws that proof away.
+  Future<void> release(String name) async {
+    final res = await _http
+        .post(
+          Uri.parse('$endpoint/release'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'name': name, 'deviceId': await deviceId()}),
+        )
+        .timeout(const Duration(seconds: 45));
+    _decode(res);
+  }
+
+  /// Forgets the device id as well as the claim.
+  ///
+  /// Distinct from [forget], which a reinstall-recovery restore relies on
+  /// leaving intact. Only a disconnect wants this: the device id is what ties
+  /// this phone to a claim, and keeping it after giving the claim up means
+  /// the next setup on this phone inherits an identity it no longer owns.
+  Future<void> forgetEverything() async {
+    await forget();
+    await _storage.delete(key: _kDeviceId);
+  }
+
   Future<Claim?> saved() async {
     final hostname = await _storage.read(key: _kHostname);
     final token = await _storage.read(key: _kTunnelToken);

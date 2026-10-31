@@ -197,6 +197,11 @@ class InviteStore {
     return written;
   }
 
+  /// Drops every code. Used when the drive is disconnected: the codes name a
+  /// hostname that is about to stop existing, so keeping them would only hand
+  /// people an address that answers for someone else now.
+  void clear() => _db.execute('DELETE FROM invite');
+
   void remove(String rawCode) =>
       _db.execute('DELETE FROM invite WHERE code = ?', [normalize(rawCode)]);
 
