@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
+import 'dns_check.dart';
+
 enum TunnelState { stopped, starting, registered, verifying, live, failed }
 
 /// Supervises the bundled cloudflared process and proves the hostname is
@@ -162,6 +164,10 @@ class TunnelManager {
     final url = Uri.parse('https://$hostname/api/health');
 
     var attempt = 0;
+    // Counted separately from other failures: a name that will not resolve
+    // and an address that will not answer need opposite advice, and only one
+    // of them is the drive's fault.
+    var lookupFailures = 0;
     while (DateTime.now().isBefore(deadline) &&
         !_stopRequested &&
         generation == _verifyGeneration) {
@@ -180,6 +186,7 @@ class TunnelManager {
       } on TimeoutException {
         _log('health check timed out (attempt $attempt)');
       } on SocketException catch (e) {
+        if (DnsCheck.isLookupFailure(e)) lookupFailures++;
         _log('health check network error: ${e.message} (attempt $attempt)');
       } on http.ClientException catch (e) {
         _log('health check failed: ${e.message} (attempt $attempt)');
@@ -189,10 +196,38 @@ class TunnelManager {
     }
 
     if (_stopRequested || generation != _verifyGeneration) return;
-    lastError ??= '$hostname did not answer within '
-        '${verifyBudget.inSeconds}s. The drive is running; the address may '
-        'still be propagating.';
+    lastError ??= await _explainFailure(lookupFailures);
     _setState(TunnelState.failed);
+  }
+
+  /// Turns a verify timeout into advice the user can act on.
+  ///
+  /// The case worth separating is a hostname this phone cannot resolve while
+  /// the rest of the internet can. That happens after a rename: the record is
+  /// seconds old, something here asked before it existed, and the "no such
+  /// name" got cached for the zone's SOA minimum. Reporting that as "the
+  /// drive did not answer" sends the user to debug a drive that is serving
+  /// perfectly well to everyone else.
+  Future<String> _explainFailure(int lookupFailures) async {
+    if (lookupFailures == 0) {
+      return '$hostname did not answer within ${verifyBudget.inSeconds}s. '
+          'The drive is running; the address may still be propagating.';
+    }
+
+    switch (await DnsCheck.published(hostname, client: _http)) {
+      case true:
+        return 'This phone cannot look up $hostname, but the address is live '
+            '— public DNS has it, and other devices can reach it now. This '
+            'phone asked for the name moments before it existed and cached '
+            'the "not found", which clears within about half an hour. '
+            'Switching to mobile data and back is the quick way round it.';
+      case false:
+        return '$hostname has no DNS record yet. The drive itself is running '
+            'and will answer as soon as the record appears.';
+      case null:
+        return 'Could not look up $hostname, and could not reach public DNS '
+            'to find out why. Check this phone\'s connection.';
+    }
   }
 
   /// Resolves the Cloudflare tunnel edge via Dart's resolver.

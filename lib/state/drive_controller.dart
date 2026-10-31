@@ -22,6 +22,7 @@ import '../storage/drive_location.dart';
 import '../storage/folder_rules.dart';
 import '../storage/migrate.dart';
 import '../tunnel/cloudflared.dart';
+import '../tunnel/dns_check.dart';
 import '../tunnel/provision.dart';
 import '../tunnel/recovery_payload.dart';
 import '../tunnel/recovery_vault.dart';
@@ -619,6 +620,9 @@ class DriveController extends ChangeNotifier {
   /// keep serving — the tunnel never dropped — but the service read the old
   /// hostname out of secure storage when it started and is the thing that
   /// proves the address answers. Restarting makes it prove the new one.
+  /// What a rename is waiting on, shown while it runs. Null when idle.
+  String? renameState;
+
   Future<bool> renameDrive(String rawName) async {
     final current = claim;
     if (current == null) return false;
@@ -667,9 +671,27 @@ class DriveController extends ChangeNotifier {
       await backUpForRecovery();
 
       await stopDrive();
+
+      // Do not let anything on this phone ask for the new name until it
+      // exists. The restart below probes it, and a probe that beats the
+      // record by a few seconds gets "no such name" — which this phone's
+      // resolver then caches for the zone's SOA minimum, half an hour on a
+      // Cloudflare zone. The drive ends up live for the entire internet
+      // except the phone serving it, and nothing clears that but time.
+      //
+      // Asked over DoH, so the local resolver is not the one asking and has
+      // nothing to cache. A timeout here is not a failure: the rename worked,
+      // and the health check is still free to report what it finds.
+      renameState = 'Waiting for DNS to pick up $hostname…';
+      notifyListeners();
+      await DnsCheck.waitUntilPublished(hostname);
+      renameState = null;
+      notifyListeners();
+
       await startDrive();
       return true;
     } on CloudflareError catch (e) {
+      renameState = null;
       errorMessage = e.isDuplicateTunnel
           ? 'A tunnel named ${DriveName.tunnelName(rawName)} already exists '
               'on your account, so that name is in use. Pick another, or '

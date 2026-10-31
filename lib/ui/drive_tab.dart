@@ -796,9 +796,16 @@ class _RenameDialogState extends State<_RenameDialog> {
             ],
             if (_saving) ...[
               const SizedBox(height: 14),
-              Text(
-                'Moving the address. Do not close the app.',
-                style: theme.textTheme.bodySmall,
+              // Listens to the controller so the step being waited on is
+              // named. The DNS wait is the slow one, and a progress spinner
+              // with no words next to it reads as a hang.
+              AnimatedBuilder(
+                animation: widget.controller,
+                builder: (context, _) => Text(
+                  widget.controller.renameState ??
+                      'Moving the address. Do not close the app.',
+                  style: theme.textTheme.bodySmall,
+                ),
               ),
             ],
           ],

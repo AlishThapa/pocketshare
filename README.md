@@ -277,6 +277,7 @@ dart run tool/smoke_cloudflare.dart  # API client + provisioning, vs a fake Clou
 dart run tool/smoke_invites.dart     # invite codes
 dart run tool/smoke_tokens.dart      # masking, fingerprints, token shapes, device ids
 dart run tool/smoke_recovery.dart    # reinstall-recovery crypto and payload
+dart run tool/smoke_dns.dart         # the DoH check that guards a fresh rename
 dart run tool/dev_server.dart        # run the drive locally to poke at the web UI
 node worker/test.mjs                 # the provisioning Worker, against a fake KV
 flutter test                         # the app's own screens, against stubbed channels
@@ -349,6 +350,27 @@ ingress back and the drive keeps answering where it was. Past that point the
 move has happened, and a rename interrupted in between is resumable: it looks
 for the old tunnel name first, then the new one, so retrying finishes the DNS
 move rather than starting over.
+
+### Not asking too early
+
+Found on hardware, and the reason the first rename looked broken. The restart
+probed the new hostname about three seconds after the CNAME was written. The
+resolver answered "no such name" — correctly, for that instant — and cached it
+for the zone's SOA minimum, which is 1800 seconds. The drive was live for the
+entire internet and unreachable from the one phone serving it, for half an
+hour, with nothing to do but wait.
+
+A lookup for a name that does not exist yet is not a free question. So the
+rename waits for the record over DNS-over-HTTPS (`DnsCheck`), which is an
+ordinary HTTPS request to a name that already resolves, and only then restarts
+the drive. The local resolver is never asked about the new name until there is
+something to find.
+
+For the case where it has already happened, a verify timeout caused by lookup
+failures asks public DNS what it should have seen. If the record is there, the
+drive says so — that this phone cannot resolve a name the rest of the world
+can, why, and that it clears by itself — rather than reporting a drive that
+did not answer and sending the user to debug a drive that is serving fine.
 
 The recovery backup is re-sealed afterwards, since it carries the hostname and
 a stale copy would restore the phone onto the address it just gave up. The
