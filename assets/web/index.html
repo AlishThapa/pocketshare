@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>PocketShare</title>
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
 
@@ -20,7 +20,12 @@
     <label for="u">Username</label>
     <input id="u" name="username" autocomplete="username" required autocapitalize="none" spellcheck="false">
     <label for="p">Password</label>
-    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    <div class="with-reveal">
+      <input id="p" name="password" type="password" autocomplete="current-password" required>
+      <!-- type=button, or it submits the form on every tap. -->
+      <button type="button" id="reveal" class="reveal" aria-pressed="false"
+              aria-label="Show password" title="Show password">Show</button>
+    </div>
     <button type="submit" id="login-btn">Sign in</button>
     <p class="error" id="login-error" role="alert"></p>
   </form>
@@ -44,13 +49,49 @@
       <input id="file-input" type="file" multiple hidden>
     </div>
 
+    <div class="toolbar" id="toolbar">
+      <input id="filter" type="search" placeholder="Filter this folder"
+             aria-label="Filter this folder" autocapitalize="none" spellcheck="false">
+      <div class="sort">
+        <label for="sort-by">Sort</label>
+        <select id="sort-by" aria-label="Sort by">
+          <option value="name">Name</option>
+          <option value="size">Size</option>
+          <option value="modified">Modified</option>
+        </select>
+        <!-- aria-pressed rather than a label swap: the arrow alone is not a
+             name, and a screen reader should hear the state, not a glyph. -->
+        <button id="sort-dir" class="ghost" aria-pressed="false"
+                title="Sort direction">↑</button>
+      </div>
+    </div>
+
     <div id="uploads"></div>
     <div id="list" class="list" aria-live="polite"></div>
     <p class="empty" id="empty" hidden>Nothing here yet.</p>
   </main>
 </div>
 
+<dialog id="info" aria-label="File details">
+  <div class="preview-bar">
+    <strong>Details</strong>
+    <span class="spacer"></span>
+    <button id="info-close" class="ghost" aria-label="Close details">Close</button>
+  </div>
+  <dl id="info-body"></dl>
+</dialog>
+
+<dialog id="preview" aria-label="Preview">
+  <div class="preview-bar">
+    <strong id="preview-name"></strong>
+    <span class="spacer"></span>
+    <button id="preview-download" class="ghost">Download</button>
+    <button id="preview-close" class="ghost" aria-label="Close preview">Close</button>
+  </div>
+  <div id="preview-body"></div>
+</dialog>
+
 <div id="drop-hint">Drop to upload</div>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

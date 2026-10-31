@@ -10,6 +10,7 @@ import 'package:shelf_router/shelf_router.dart';
 
 import 'auth.dart';
 import 'files.dart';
+import 'inline_types.dart';
 import 'store.dart';
 import 'uploads.dart';
 
@@ -151,14 +152,18 @@ class DriveServer {
             // edge-cacheable. Nothing from this server may be stored.
             'Cache-Control': 'no-store, private',
             'X-Content-Type-Options': 'nosniff',
-            'X-Frame-Options': 'DENY',
+            // SAMEORIGIN rather than DENY: the preview needs to put a PDF
+            // or a text file in an iframe of this same drive, and framing by
+            // this origin is not what clickjacking means. Another site still
+            // cannot frame anything here.
+            'X-Frame-Options': 'SAMEORIGIN',
             'Referrer-Policy': 'no-referrer',
             // The UI is fully self-hosted, so nothing third-party is allowed
             // to load or to be connected to.
             'Content-Security-Policy':
                 "default-src 'self'; img-src 'self' data: blob:; "
                 "media-src 'self' blob:; object-src 'none'; "
-                "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+                "base-uri 'none'; form-action 'self'; frame-ancestors 'self'",
           });
         };
       };
@@ -347,8 +352,15 @@ class DriveServer {
         if (!await file.exists()) return _json({'error': 'not found'}, 404);
 
         final length = await file.length();
-        final type = lookupMimeType(file.path) ?? 'application/octet-stream';
-        final inline = request.url.queryParameters['inline'] == '1';
+
+        // The extension is a claim, not a fact: it came from whoever put the
+        // file here. What goes on the wire is the allowlisted type, so a
+        // .js or .html in the drive is served as octet-stream and cannot be
+        // pulled back in as script or rendered as a page. See [InlineTypes].
+        final claimed = lookupMimeType(file.path);
+        final type = InlineTypes.served(claimed);
+        final inline = request.url.queryParameters['inline'] == '1' &&
+            InlineTypes.allows(claimed);
         final disposition =
             inline ? 'inline' : _attachment(p.basename(file.path));
 

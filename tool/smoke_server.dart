@@ -273,6 +273,72 @@ Future<void> main() async {
   await body(r);
   check('session dead after logout', r.statusCode == 401, '${r.statusCode}');
 
+  print('\n-- what a file is allowed to be --');
+  // An earlier case signs the first session out, so take a fresh one.
+  r = await req('POST', '/api/auth/login',
+      json: {'username': 'alish', 'password': 'a-long-enough-pass'});
+  await body(r);
+  final liveCookie =
+      (r.headers['set-cookie']?.first ?? '').split(';').first;
+  check('signed back in for the type checks', r.statusCode == 200,
+      '${r.statusCode}');
+
+  // The attack this closes: a file in the drive pulled back in as a
+  // subresource. Content-Disposition does not apply to those, so the MIME
+  // type is the only thing standing between an uploaded .js and it running
+  // as the signed-in owner. Anything off the allowlist is octet-stream.
+  for (final hostile in ['evil.js', 'page.html', 'sneaky.svg', 'style.css']) {
+    File('${root.path}/$hostile').writeAsStringSync('x');
+    final q = Uri.encodeQueryComponent(hostile);
+
+    r = await req('GET', '/api/download?path=$q&inline=1', cookie: liveCookie);
+    await _collect(r);
+    final type = r.headers.contentType?.mimeType;
+    check('$hostile is served as octet-stream',
+        type == 'application/octet-stream', '$type');
+    check('$hostile is not served inline',
+        (r.headers.value('content-disposition') ?? '').startsWith('attachment'),
+        r.headers.value('content-disposition') ?? '');
+  }
+
+  for (final safe in {
+    'photo.png': 'image/png',
+    'clip.mp4': 'video/mp4',
+    'notes.txt': 'text/plain',
+    'paper.pdf': 'application/pdf',
+  }.entries) {
+    File('${root.path}/${safe.key}').writeAsStringSync('x');
+    final q = Uri.encodeQueryComponent(safe.key);
+
+    r = await req('GET', '/api/download?path=$q&inline=1', cookie: liveCookie);
+    await _collect(r);
+    check('${safe.key} keeps its type',
+        r.headers.contentType?.mimeType == safe.value,
+        '${r.headers.contentType?.mimeType}');
+    check('${safe.key} may be shown inline',
+        r.headers.value('content-disposition') == 'inline',
+        r.headers.value('content-disposition') ?? '');
+
+    // Without inline=1 it is still a download, and still truthfully typed:
+    // an image cannot execute, so there is nothing to hide from.
+    r = await req('GET', '/api/download?path=$q', cookie: liveCookie);
+    await _collect(r);
+    check('${safe.key} defaults to a download',
+        (r.headers.value('content-disposition') ?? '').startsWith('attachment'),
+        r.headers.value('content-disposition') ?? '');
+  }
+
+  print('\n-- framing --');
+  r = await req('GET', '/', cookie: liveCookie);
+  await _collect(r);
+  check('this origin may frame its own preview',
+      r.headers.value('x-frame-options') == 'SAMEORIGIN',
+      r.headers.value('x-frame-options') ?? '');
+  check('nobody else may frame it',
+      (r.headers.value('content-security-policy') ?? '')
+          .contains("frame-ancestors 'self'"),
+      r.headers.value('content-security-policy') ?? '');
+
   client.close(force: true);
   await server.stop();
   print('\n-- disconnecting forgets who owns the drive --');

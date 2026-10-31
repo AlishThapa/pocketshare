@@ -239,3 +239,171 @@ body.dragging #drop-hint { display: grid; }
   .brand { display: none; }
   .row .meta { display: none; }
 }
+
+/* --- toolbar --------------------------------------------------------- */
+
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+
+.toolbar #filter {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.toolbar .sort {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.toolbar .sort label {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.toolbar select {
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: inherit;
+}
+
+#sort-dir {
+  min-width: 2.2rem;
+}
+
+/* --- preview --------------------------------------------------------- */
+
+#preview {
+  width: min(92vw, 60rem);
+  max-height: 88vh;
+  padding: 0;
+  border: none;
+  border-radius: 14px;
+  background: var(--surface);
+  color: inherit;
+  overflow: hidden;
+}
+
+#preview::backdrop {
+  background: rgb(0 0 0 / 0.62);
+}
+
+.preview-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.preview-bar strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-bar .spacer { flex: 1; }
+
+#preview-body {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  /* The bar is about 52px; this keeps the dialog from growing past its max
+     and clipping its own controls. */
+  max-height: calc(88vh - 52px);
+  overflow: auto;
+  background: #000;
+}
+
+.preview-image,
+.preview-video {
+  max-width: 100%;
+  max-height: calc(88vh - 52px);
+  display: block;
+}
+
+.preview-audio {
+  width: min(100%, 32rem);
+  margin: 2rem 1rem;
+}
+
+.preview-pdf {
+  width: 100%;
+  height: calc(88vh - 52px);
+  border: 0;
+}
+
+.preview-text {
+  margin: 0;
+  padding: 16px;
+  width: 100%;
+  background: var(--surface);
+  color: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  align-self: flex-start;
+}
+
+/* --- password reveal -------------------------------------------------- */
+
+.with-reveal {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.with-reveal input { flex: 1; min-width: 0; }
+
+.reveal {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.reveal:hover { color: var(--text); }
+
+/* --- details ---------------------------------------------------------- */
+
+#info {
+  width: min(92vw, 30rem);
+  padding: 0;
+  border: none;
+  border-radius: 14px;
+  background: var(--surface);
+  color: inherit;
+}
+
+#info::backdrop { background: rgb(0 0 0 / 0.62); }
+
+#info-body {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  margin: 0;
+  padding: 16px;
+}
+
+#info-body dt {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+#info-body dd {
+  margin: 0;
+  word-break: break-word;
+}

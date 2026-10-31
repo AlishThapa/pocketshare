@@ -57,6 +57,100 @@ function joinPath(dir, name) {
   return dir ? `${dir}/${name}` : name;
 }
 
+function extensionOf(name) {
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+}
+
+// --- sorting and filtering --------------------------------------------------
+
+// Mirrors the server's allowlist in lib/server/inline_types.dart. The server
+// is what enforces it; this only decides whether to offer a preview, so a
+// disagreement costs a pointless dialog, never an unsafe render.
+const PREVIEWABLE = {
+  image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'ico'],
+  video: ['mp4', 'webm', 'mov', 'm4v', 'ogv'],
+  audio: ['mp3', 'm4a', 'aac', 'ogg', 'oga', 'wav', 'flac', 'opus'],
+  pdf: ['pdf'],
+  text: ['txt', 'log', 'md', 'csv'],
+};
+
+function previewKind(entry) {
+  if (entry.isDir) return null;
+  const ext = extensionOf(entry.name);
+  for (const [kind, extensions] of Object.entries(PREVIEWABLE)) {
+    if (extensions.includes(ext)) return kind;
+  }
+  return null;
+}
+
+const SORT_KEY = 'ps.sort';
+
+let sort = { by: 'name', asc: true };
+
+function loadSort() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SORT_KEY) || 'null');
+    if (saved && ['name', 'size', 'modified'].includes(saved.by)) {
+      sort = { by: saved.by, asc: saved.asc !== false };
+    }
+  } catch {
+    // A corrupt or unavailable localStorage is not a reason to fail to list
+    // files; the default order is perfectly usable.
+  }
+  $('sort-by').value = sort.by;
+  paintSortDirection();
+}
+
+function saveSort() {
+  try {
+    localStorage.setItem(SORT_KEY, JSON.stringify(sort));
+  } catch { /* private mode, or storage disabled */ }
+}
+
+function paintSortDirection() {
+  const btn = $('sort-dir');
+  btn.textContent = sort.asc ? '↑' : '↓';
+  btn.setAttribute('aria-pressed', String(!sort.asc));
+  btn.title = sort.asc ? 'Ascending' : 'Descending';
+}
+
+/**
+ * Folders first, always, then the chosen key.
+ *
+ * Folders have no size worth comparing, and burying them among files sorted
+ * by size is how you lose the one you were looking for. The direction toggle
+ * applies within each group, not across them.
+ */
+function sortEntries(entries) {
+  const collator = new Intl.Collator(undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  });
+  const direction = sort.asc ? 1 : -1;
+
+  return [...entries].sort((a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+
+    let cmp;
+    if (sort.by === 'size' && !a.isDir) {
+      cmp = (a.size || 0) - (b.size || 0);
+    } else if (sort.by === 'modified') {
+      cmp = (a.modified || 0) - (b.modified || 0);
+    } else {
+      cmp = collator.compare(a.name, b.name);
+    }
+    // Ties fall back to the name so the order never shuffles between renders.
+    return (cmp || collator.compare(a.name, b.name)) * direction;
+  });
+}
+
+function applyFilter(entries) {
+  const q = $('filter').value.trim().toLowerCase();
+  if (!q) return entries;
+  return entries.filter((e) => e.name.toLowerCase().includes(q));
+}
+
 // --- login ------------------------------------------------------------------
 
 function showLogin() {
@@ -64,6 +158,15 @@ function showLogin() {
   $('app').hidden = true;
   $('login').hidden = false;
   $('login-host').textContent = location.host;
+
+  // Never leave a password visible across a sign-out.
+  const field = $('p');
+  field.type = 'password';
+  field.value = '';
+  const btn = $('reveal');
+  btn.textContent = 'Show';
+  btn.setAttribute('aria-pressed', 'false');
+  btn.setAttribute('aria-label', 'Show password');
 }
 
 function showApp() {
@@ -96,6 +199,30 @@ $('login-form').addEventListener('submit', async (e) => {
   }
 });
 
+// Typing a long password blind on a phone keyboard is how people end up
+// choosing short ones. aria-pressed carries the state; the label says what
+// the button will do next.
+$('reveal').addEventListener('click', () => {
+  const field = $('p');
+  const showing = field.type === 'text';
+  field.type = showing ? 'password' : 'text';
+
+  const btn = $('reveal');
+  btn.textContent = showing ? 'Show' : 'Hide';
+  btn.setAttribute('aria-pressed', String(!showing));
+  const label = showing ? 'Show password' : 'Hide password';
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
+
+  // Focus goes back to the field, at the end, so the reveal does not cost
+  // the user their place mid-password.
+  field.focus();
+  const end = field.value.length;
+  try {
+    field.setSelectionRange(end, end);
+  } catch { /* some browsers refuse on type=password */ }
+});
+
 $('btn-logout').addEventListener('click', async () => {
   try {
     await api('/api/auth/logout', { method: 'POST' });
@@ -109,6 +236,9 @@ async function navigate(path) {
   cwd = path;
   viewing = 'files';
   $('search').value = '';
+  // The filter describes a folder, so it does not survive leaving one.
+  $('filter').value = '';
+  $('toolbar').hidden = false;
   renderCrumbs();
 
   const { entries } = await api(`/api/files?path=${encodeURIComponent(path)}`);
@@ -117,6 +247,9 @@ async function navigate(path) {
 
 async function openTrash() {
   viewing = 'trash';
+  // Trash rows are deleted things with their own ordering by when they went;
+  // the folder toolbar does not apply to them.
+  $('toolbar').hidden = true;
   renderCrumbs();
   const { entries } = await api('/api/trash');
   renderTrash(entries);
@@ -155,14 +288,30 @@ function renderCrumbs() {
 
 // --- listing ----------------------------------------------------------------
 
-function renderList(entries) {
-  const list = $('list');
-  list.replaceChildren();
-  $('empty').hidden = entries.length > 0;
+// The last listing the server gave us. Kept so sorting and filtering are
+// instant and offline-safe: neither changes what is in the folder, so neither
+// is a reason to ask again.
+let currentEntries = [];
 
-  for (const entry of entries) {
+function renderList(entries) {
+  currentEntries = entries;
+  paintList();
+}
+
+function paintList() {
+  const list = $('list');
+  const shown = sortEntries(applyFilter(currentEntries));
+
+  list.replaceChildren();
+  for (const entry of shown) {
     list.append(fileRow(entry));
   }
+
+  const empty = $('empty');
+  empty.hidden = shown.length > 0;
+  empty.textContent = currentEntries.length === 0
+      ? 'Nothing here yet.'
+      : 'Nothing matches that filter.';
 }
 
 function fileRow(entry) {
@@ -178,8 +327,13 @@ function fileRow(entry) {
   const name = document.createElement('button');
   name.className = 'name';
   name.textContent = entry.name;
-  name.onclick = () =>
-    entry.isDir ? navigate(entry.path) : download(entry.path);
+  const kind = previewKind(entry);
+  name.onclick = () => {
+    if (entry.isDir) return navigate(entry.path);
+    // Opening a file the browser can show should show it. Anything else
+    // still downloads, which is what clicking it has always done.
+    return kind ? openPreview(entry, kind) : download(entry.path);
+  };
 
   const meta = document.createElement('span');
   meta.className = 'meta';
@@ -188,7 +342,11 @@ function fileRow(entry) {
     : `${humanSize(entry.size)} · ${humanDate(entry.modified)}`;
 
   const menu = document.createElement('menu');
+  if (!entry.isDir) {
+    menu.append(action('Download', () => download(entry.path)));
+  }
   menu.append(
+    action('Details', () => showInfo(entry)),
     action('Rename', () => renameEntry(entry)),
     action('Delete', () => deleteEntry(entry)),
   );
@@ -302,6 +460,156 @@ $('search').addEventListener('input', (e) => {
     const { results } = await api(`/api/search?q=${encodeURIComponent(q)}`);
     renderList(results);
   }, 250);
+});
+
+// --- toolbar ----------------------------------------------------------------
+
+$('sort-by').addEventListener('change', (e) => {
+  sort.by = e.target.value;
+  saveSort();
+  paintList();
+});
+
+$('sort-dir').addEventListener('click', () => {
+  sort.asc = !sort.asc;
+  paintSortDirection();
+  saveSort();
+  paintList();
+});
+
+$('filter').addEventListener('input', paintList);
+
+// --- preview ----------------------------------------------------------------
+
+let previewUrl = null;
+
+/**
+ * Shows a file rather than downloading it.
+ *
+ * `inline=1` only asks; the server decides, and refuses for anything outside
+ * its allowlist. Range requests already work, so video and audio seek.
+ */
+async function openPreview(entry, kind) {
+  const dialog = $('preview');
+  const body = $('preview-body');
+  body.replaceChildren();
+
+  $('preview-name').textContent = entry.name;
+  previewUrl = `/api/download?path=${encodeURIComponent(entry.path)}&inline=1`;
+
+  let node;
+  if (kind === 'image') {
+    node = document.createElement('img');
+    node.src = previewUrl;
+    node.alt = entry.name;
+  } else if (kind === 'video') {
+    node = document.createElement('video');
+    node.src = previewUrl;
+    node.controls = true;
+    node.preload = 'metadata';
+  } else if (kind === 'audio') {
+    node = document.createElement('audio');
+    node.src = previewUrl;
+    node.controls = true;
+  } else if (kind === 'pdf') {
+    node = document.createElement('iframe');
+    node.src = previewUrl;
+    node.title = entry.name;
+  } else {
+    // Text is fetched rather than framed so it can be put in a <pre> as
+    // textContent. Framing it would render it as a document of this origin,
+    // and a file the drive holds is not something to hand that to.
+    node = document.createElement('pre');
+    node.className = 'preview-text';
+    node.textContent = 'Loading…';
+    fetchText(entry.path, node);
+  }
+
+  node.className = `preview-${kind}${node.className ? ' ' + node.className : ''}`;
+  body.append(node);
+  dialog.showModal();
+}
+
+const TEXT_PREVIEW_LIMIT = 512 * 1024;
+
+async function fetchText(path, node) {
+  try {
+    const res = await fetch(
+      `/api/download?path=${encodeURIComponent(path)}&inline=1`,
+      { headers: { Range: `bytes=0-${TEXT_PREVIEW_LIMIT - 1}` } },
+    );
+    if (!res.ok && res.status !== 206) throw new Error(`failed (${res.status})`);
+    const text = await res.text();
+    node.textContent = text;
+    if (res.status === 206) {
+      node.append(Object.assign(document.createElement('em'), {
+        textContent: '\n\n— showing the first 512 KB —',
+      }));
+    }
+  } catch (e) {
+    node.textContent = `Could not read this file: ${e.message}`;
+  }
+}
+
+function closePreview() {
+  const dialog = $('preview');
+  // Emptying it stops a video that is still playing; leaving the node alive
+  // in a closed dialog keeps the audio going, which is startling.
+  $('preview-body').replaceChildren();
+  previewUrl = null;
+  if (dialog.open) dialog.close();
+}
+
+$('preview-close').addEventListener('click', closePreview);
+$('preview').addEventListener('close', () => $('preview-body').replaceChildren());
+
+// Clicking the backdrop closes it. The dialog's own box is a child, so a
+// click that lands on the element itself landed outside the content.
+$('preview').addEventListener('click', (e) => {
+  if (e.target === $('preview')) closePreview();
+});
+
+$('preview-download').addEventListener('click', () => {
+  if (!previewUrl) return;
+  download(decodeURIComponent(new URL(previewUrl, location.href)
+      .searchParams.get('path')));
+});
+
+// --- details ----------------------------------------------------------------
+
+function showInfo(entry) {
+  const body = $('info-body');
+  body.replaceChildren();
+
+  const rows = [
+    ['Name', entry.name],
+    ['Where', '/' + (entry.path || entry.name)],
+    ['Kind', entry.isDir ? 'Folder' : (kindLabel(entry) || 'File')],
+  ];
+  if (!entry.isDir) {
+    rows.push(['Size', `${humanSize(entry.size || 0)} (${(entry.size || 0).toLocaleString()} bytes)`]);
+  }
+  rows.push(['Modified', new Date(entry.modified).toLocaleString()]);
+
+  for (const [label, value] of rows) {
+    body.append(
+      Object.assign(document.createElement('dt'), { textContent: label }),
+      Object.assign(document.createElement('dd'), { textContent: value }),
+    );
+  }
+  $('info').showModal();
+}
+
+function kindLabel(entry) {
+  const ext = extensionOf(entry.name);
+  const kind = previewKind(entry);
+  if (kind) return `${kind[0].toUpperCase()}${kind.slice(1)}${ext ? ` · .${ext}` : ''}`;
+  return ext ? `.${ext} file` : null;
+}
+
+$('info-close').addEventListener('click', () => $('info').close());
+$('info').addEventListener('click', (e) => {
+  if (e.target === $('info')) $('info').close();
 });
 
 // --- uploads ----------------------------------------------------------------
@@ -452,6 +760,7 @@ function scrubUrl() {
 
 (async function boot() {
   scrubUrl();
+  loadSort();
   try {
     await api('/api/me');
     showApp();
