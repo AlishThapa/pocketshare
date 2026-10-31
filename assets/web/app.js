@@ -241,8 +241,9 @@ async function navigate(path) {
   $('toolbar').hidden = false;
   renderCrumbs();
 
-  const { entries } = await api(`/api/files?path=${encodeURIComponent(path)}`);
-  renderList(entries);
+  const data = await api(`/api/files?path=${encodeURIComponent(path)}`);
+  sharedPaths = new Set(data.shared || []);
+  renderList(data.entries);
 }
 
 async function openTrash() {
@@ -258,6 +259,16 @@ async function openTrash() {
 function renderCrumbs() {
   const nav = $('crumbs');
   nav.replaceChildren();
+
+  if (viewing === 'shared') {
+    const back = document.createElement('button');
+    back.textContent = '← Files';
+    back.onclick = () => navigate('');
+    nav.append(back, Object.assign(document.createElement('span'), {
+      textContent: ' / Shared links',
+    }));
+    return;
+  }
 
   if (viewing === 'trash') {
     const back = document.createElement('button');
@@ -292,6 +303,10 @@ function renderCrumbs() {
 // instant and offline-safe: neither changes what is in the folder, so neither
 // is a reason to ask again.
 let currentEntries = [];
+
+/// Paths with a link that still opens. Comes with the listing, so a row is
+/// never drawn as private while a second request decides otherwise.
+let sharedPaths = new Set();
 
 function renderList(entries) {
   currentEntries = entries;
@@ -346,12 +361,26 @@ function fileRow(entry) {
     menu.append(action('Download', () => download(entry.path)));
   }
   menu.append(
+    action('Share', () => openShare(entry)),
     action('Details', () => showInfo(entry)),
     action('Rename', () => renameEntry(entry)),
     action('Delete', () => deleteEntry(entry)),
   );
 
-  row.append(icon, name, meta, menu);
+  row.append(icon, name, meta);
+
+  // A file anyone with a link can read should say so on the row, not three
+  // taps into a menu. This is the whole difference between private and
+  // public, and it is the one thing you want to notice by accident.
+  if (sharedPaths.has(entry.path)) {
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = 'Public';
+    badge.title = 'A share link can open this';
+    row.append(badge);
+  }
+
+  row.append(menu);
   return row;
 }
 
@@ -574,6 +603,139 @@ $('preview-download').addEventListener('click', () => {
   download(decodeURIComponent(new URL(previewUrl, location.href)
       .searchParams.get('path')));
 });
+
+// --- sharing ----------------------------------------------------------------
+
+let sharing = null;
+
+function openShare(entry) {
+  sharing = entry;
+  $('share-target').textContent = entry.name;
+  $('share-setup').hidden = false;
+  $('share-done').hidden = true;
+  $('share-error').textContent = '';
+  $('share-password').value = '';
+  $('share-cap').value = '';
+  $('share-expiry').value = '7';
+  $('share').showModal();
+}
+
+$('share-create').addEventListener('click', async () => {
+  if (!sharing) return;
+  const btn = $('share-create');
+  const err = $('share-error');
+  err.textContent = '';
+  btn.disabled = true;
+  btn.textContent = 'Creating…';
+
+  try {
+    const { share } = await api('/api/shares', {
+      method: 'POST',
+      body: {
+        path: sharing.path,
+        expiresInDays: Number($('share-expiry').value),
+        password: $('share-password').value,
+        maxDownloads: Number($('share-cap').value) || 0,
+      },
+    });
+
+    const url = `${location.origin}/s/${share.token}`;
+    $('share-url').value = url;
+    $('share-summary').textContent = describeShare(share);
+    $('share-setup').hidden = true;
+    $('share-done').hidden = false;
+    $('share-url').focus();
+    $('share-url').select();
+
+    // The badge comes from the listing, so refresh it rather than guessing.
+    if (viewing === 'files') navigate(cwd);
+  } catch (e) {
+    err.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create link';
+  }
+});
+
+$('share-copy').addEventListener('click', async () => {
+  const field = $('share-url');
+  const btn = $('share-copy');
+  try {
+    // navigator.clipboard needs a secure context, which a drive on https
+    // always is — but a dev build on plain http is not, so fall back rather
+    // than leaving the button dead.
+    await navigator.clipboard.writeText(field.value);
+  } catch {
+    field.select();
+    try { document.execCommand('copy'); } catch { /* nothing left to try */ }
+  }
+  btn.textContent = 'Copied';
+  setTimeout(() => { btn.textContent = 'Copy link'; }, 1600);
+});
+
+function describeShare(share) {
+  const bits = [];
+  bits.push(share.expiresAt
+    ? `Stops working ${humanDate(share.expiresAt)}`
+    : 'Never expires');
+  if (share.hasPassword) bits.push('password required');
+  if (share.maxDownloads) bits.push(`${share.maxDownloads} download limit`);
+  return bits.join(' · ') + '.';
+}
+
+async function openShared() {
+  viewing = 'shared';
+  $('toolbar').hidden = true;
+  renderCrumbs();
+
+  const { shares } = await api('/api/shares');
+  const list = $('list');
+  list.replaceChildren();
+
+  const empty = $('empty');
+  empty.hidden = shares.length > 0;
+  empty.textContent = 'Nothing is shared.';
+
+  for (const share of shares) {
+    const row = document.createElement('div');
+    row.className = 'row';
+
+    const icon = document.createElement('span');
+    icon.className = 'icon';
+    icon.textContent = share.isDir ? '📁' : '🔗';
+
+    const name = document.createElement('button');
+    name.className = 'name';
+    name.textContent = share.path;
+    name.onclick = () => {
+      const url = `${location.origin}/s/${share.token}`;
+      navigator.clipboard?.writeText(url).catch(() => {});
+      name.textContent = 'Link copied';
+      setTimeout(() => { name.textContent = share.path; }, 1400);
+    };
+
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = share.live
+      ? describeShare(share).replace(/\.$/, '') +
+        ` · ${share.downloads} download${share.downloads === 1 ? '' : 's'}`
+      : 'Expired or used up';
+
+    const menu = document.createElement('menu');
+    menu.append(action('Revoke', async () => {
+      await api('/api/shares/revoke', {
+        method: 'POST',
+        body: { token: share.token },
+      });
+      openShared();
+    }));
+
+    row.append(icon, name, meta, menu);
+    list.append(row);
+  }
+}
+
+$('btn-shared').addEventListener('click', openShared);
 
 // --- details ----------------------------------------------------------------
 

@@ -124,6 +124,11 @@ class DriveStore {
   void wipeCredentials() {
     _db.execute('DELETE FROM session');
     _db.execute('DELETE FROM account');
+    // Share links are credentials too — each one lets a stranger read a file
+    // without signing in — and they name a hostname that is about to stop
+    // existing. DROP rather than DELETE so a table from a since-changed
+    // schema cannot survive a disconnect.
+    _db.execute('DROP TABLE IF EXISTS share');
   }
 
   void close() => _db.dispose();

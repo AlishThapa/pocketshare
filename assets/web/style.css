@@ -407,3 +407,111 @@ body.dragging #drop-hint { display: grid; }
   margin: 0;
   word-break: break-word;
 }
+
+/* --- sharing ---------------------------------------------------------- */
+
+.badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+#share {
+  width: min(92vw, 28rem);
+  padding: 0;
+  border: none;
+  border-radius: 14px;
+  background: var(--surface);
+  color: inherit;
+}
+
+#share::backdrop { background: rgb(0 0 0 / 0.62); }
+
+.share-form { margin: 0; }
+
+.share-pad {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+}
+
+.share-pad label {
+  margin-top: 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.share-pad input,
+.share-pad select {
+  font: inherit;
+  padding: 9px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: inherit;
+}
+
+.share-pad button { margin-top: 12px; }
+
+#share-url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+}
+
+/* --- the public share page -------------------------------------------- */
+
+.share-page {
+  display: block;
+  background: var(--bg);
+}
+
+.share-shell {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 32px 16px 48px;
+}
+
+.share-card { padding: 24px; }
+
+.share-brand {
+  margin: 0 0 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+
+.share-card h1 {
+  margin: 0 0 6px;
+  font-size: 1.3rem;
+  word-break: break-word;
+}
+
+.share-preview {
+  display: block;
+  max-width: 100%;
+  margin: 18px 0;
+  border-radius: var(--radius);
+}
+
+.share-pdf {
+  width: 100%;
+  height: min(70vh, 40rem);
+  border: 0;
+}
+
+#share-crumbs { margin: 10px 0 14px; }
+
+.share-foot {
+  margin: 18px 4px 0;
+  font-size: 0.8rem;
+  text-align: center;
+}

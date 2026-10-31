@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Shared with you · PocketShare</title>
+<link rel="stylesheet" href="/style.css?v=6">
+</head>
+<body class="share-page">
+
+<main class="share-shell">
+  <div class="card share-card">
+    <p class="share-brand">PocketShare</p>
+
+    <div id="loading">
+      <h1>Opening…</h1>
+    </div>
+
+    <div id="locked" hidden>
+      <h1>This link needs a password</h1>
+      <form id="unlock-form" method="post" action="#">
+        <label for="sp">Password</label>
+        <div class="with-reveal">
+          <input id="sp" name="password" type="password" required autocomplete="off">
+          <button type="button" id="sreveal" class="reveal" aria-pressed="false"
+                  aria-label="Show password">Show</button>
+        </div>
+        <button type="submit" id="unlock-btn">Unlock</button>
+        <p class="error" id="unlock-error" role="alert"></p>
+      </form>
+    </div>
+
+    <div id="gone" hidden>
+      <h1>Link unavailable</h1>
+      <p class="muted" id="gone-why">This link is no longer available.</p>
+    </div>
+
+    <div id="single" hidden>
+      <h1 id="single-name"></h1>
+      <p class="muted" id="single-meta"></p>
+      <div id="single-preview"></div>
+      <button id="single-download" class="primary">Download</button>
+    </div>
+
+    <div id="folder" hidden>
+      <h1 id="folder-name"></h1>
+      <nav id="share-crumbs" aria-label="Breadcrumb"></nav>
+      <div id="share-list" class="list" aria-live="polite"></div>
+      <p class="empty" id="share-empty" hidden>This folder is empty.</p>
+    </div>
+  </div>
+
+  <p class="share-foot muted">Shared from a private drive. Only this link was shared.</p>
+</main>
+
+<script src="/share.js?v=6"></script>
+</body>
+</html>

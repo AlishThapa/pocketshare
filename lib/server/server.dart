@@ -11,6 +11,7 @@ import 'package:shelf_router/shelf_router.dart';
 import 'auth.dart';
 import 'files.dart';
 import 'inline_types.dart';
+import 'shares.dart';
 import 'store.dart';
 import 'uploads.dart';
 
@@ -37,6 +38,10 @@ class DriveServer {
   /// Directory holding the browser UI, unpacked from assets at startup.
   final Directory webRoot;
   final int port;
+
+  /// Share links live in the same database as everything else, so a disconnect
+  /// or a backup covers them without a second mechanism.
+  late final ShareStore shares = ShareStore(store.db);
 
   HttpServer? _server;
   Timer? _sweeper;
@@ -86,6 +91,16 @@ class DriveServer {
     ..post('/api/rename', _rename)
     ..post('/api/move', _move)
     ..post('/api/delete', _delete)
+    ..get('/api/shares', _listShares)
+    ..post('/api/shares', _createShare)
+    ..post('/api/shares/revoke', _revokeShare)
+    // Public, deliberately: these are what a share link reaches, and the
+    // token in the path is the whole of the permission.
+    ..get('/api/share/<token>', _shareInfo)
+    ..get('/api/share/<token>/list', _shareList)
+    ..get('/api/share/<token>/download', _shareDownload)
+    ..post('/api/share/<token>/unlock', _unlockShare)
+    ..get('/s/<token>', _serveSharePage)
     ..get('/api/trash', _trash)
     ..post('/api/trash/restore', _restore)
     ..post('/api/trash/empty', _emptyTrash)
@@ -104,11 +119,25 @@ class DriveServer {
     '/api/auth/login',
   };
 
+  /// Prefixes under `/api/` that a share link reaches without signing in.
+  ///
+  /// The token in the path is the permission, so these are not unprotected,
+  /// they are protected by something other than a session. They are listed
+  /// as a prefix rather than exact paths because the token is part of the
+  /// path and there is one of these per link.
+  static const List<String> _publicPrefixes = ['/api/share/'];
+
+  static bool _needsSession(String path) {
+    if (!path.startsWith('/api/')) return false;
+    if (_publicPaths.contains(path)) return false;
+    return !_publicPrefixes.any(path.startsWith);
+  }
+
   Handler Function(Handler) get _authGate => (Handler inner) {
         return (Request request) async {
           final path = '/${request.url.path}';
 
-          if (path.startsWith('/api/') && !_publicPaths.contains(path)) {
+          if (_needsSession(path)) {
             final token = _sessionToken(request);
             if (token == null || !auth.validate(token)) {
               return _json({'error': 'unauthorized'}, 401);
@@ -237,6 +266,19 @@ class DriveServer {
     return null;
   }
 
+  /// Every cookie on the request. Share unlocking needs to look up a name it
+  /// only knows at runtime, which the session reader above cannot do.
+  static Map<String, String> _cookies(Request request) {
+    final raw = request.headers['cookie'];
+    if (raw == null) return const {};
+    final out = <String, String>{};
+    for (final part in raw.split(';')) {
+      final kv = part.trim().split('=');
+      if (kv.length >= 2) out[kv.first] = kv.sublist(1).join('=');
+    }
+    return out;
+  }
+
   /// Real client address. Only cloudflared can reach this socket, so the
   /// Cloudflare-set header is authoritative here.
   static String _clientIp(Request request) =>
@@ -248,7 +290,14 @@ class DriveServer {
 
   Future<Response> _list(Request request) => _guard(() async {
         final path = request.url.queryParameters['path'] ?? '';
-        return _json({'path': path, 'entries': await files.list(path)});
+        // Which of these are public travels with the listing rather than in a
+        // second request, so a row can never be drawn as private for the
+        // moment it takes a second call to answer.
+        return _json({
+          'path': path,
+          'entries': await files.list(path),
+          'shared': shares.livePaths().toList(),
+        });
       });
 
   Future<Response> _search(Request request) => _guard(() async {
@@ -270,19 +319,33 @@ class DriveServer {
 
   Future<Response> _rename(Request request) => _guard(() async {
         final body = await _readJson(request);
-        await files.rename(body['from'] as String, body['to'] as String);
+        final from = body['from'] as String;
+        final to = body['to'] as String;
+        await files.rename(from, to);
+        // A link already sent to someone must keep working across a rename;
+        // the share was for that thing, not for that string.
+        shares.repoint(from: from, to: to);
         return _json({'ok': true});
       });
 
   Future<Response> _move(Request request) => _guard(() async {
         final body = await _readJson(request);
-        await files.move(body['from'] as String, body['toDir'] as String);
+        final from = body['from'] as String;
+        final toDir = body['toDir'] as String;
+        await files.move(from, toDir);
+        final name = p.basename(from);
+        shares.repoint(from: from, to: toDir.isEmpty ? name : '$toDir/$name');
         return _json({'ok': true});
       });
 
   Future<Response> _delete(Request request) => _guard(() async {
         final body = await _readJson(request);
-        await files.trash(body['path'] as String);
+        final path = body['path'] as String;
+        await files.trash(path);
+        // The thing the link pointed at is in the trash. Leaving the link
+        // live would make it a 404 that looks like a bug; dropping it makes
+        // it the one honest thing, a link that no longer exists.
+        shares.forgetPath(path);
         return _json({'ok': true});
       });
 
@@ -345,8 +408,15 @@ class DriveServer {
 
   /// Serves a file with Range support, so the browser can seek in a video
   /// instead of buffering the whole thing first.
-  Future<Response> _download(Request request) => _guard(() async {
-        final relative = request.url.queryParameters['path'] ?? '';
+  Future<Response> _download(Request request) =>
+      _guard(() => _sendFile(request, request.url.queryParameters['path'] ?? ''));
+
+  /// Serves one file with ranges, the allowlisted type and a disposition.
+  ///
+  /// Shared by the owner's download route and by a share link's, so a visitor
+  /// gets exactly the same typing rules the owner does — the allowlist is
+  /// most of what makes a public link safe to hand out.
+  Future<Response> _sendFile(Request request, String relative) async {
         final file = resolveFile(files.root, relative);
         if (file == null) return _json({'error': 'bad path'}, 400);
         if (!await file.exists()) return _json({'error': 'not found'}, 404);
@@ -392,7 +462,7 @@ class DriveServer {
             'Content-Disposition': disposition,
           },
         );
-      });
+  }
 
   /// Content-Disposition for a download, per RFC 6266.
   ///
@@ -468,6 +538,195 @@ class DriveServer {
   }
 
   // --- static web UI -------------------------------------------------------
+
+  // --- sharing --------------------------------------------------------------
+
+  /// Cookie name for a share whose password has been answered. Scoped per
+  /// token so unlocking one link says nothing about any other.
+  static String _shareCookie(String token) => 'ps_share_${token.substring(0, 12)}';
+
+  Future<Response> _listShares(Request request) => _guard(() async {
+        return _json({
+          'shares': [for (final s in shares.list()) s.toOwnerJson()],
+        });
+      });
+
+  Future<Response> _createShare(Request request) => _guard(() async {
+        final body = await _readJson(request);
+        final path = (body['path'] as String? ?? '').trim();
+        if (path.isEmpty) return _json({'error': 'bad path'}, 400);
+
+        // Containment is the same check every other route uses, so a share
+        // cannot be made for anything outside the drive.
+        final dir = resolveDir(files.root, path);
+        final file = resolveFile(files.root, path);
+        if (dir == null || file == null) return _json({'error': 'bad path'}, 400);
+
+        final isDir = await Directory(dir.path).exists();
+        if (!isDir && !await File(file.path).exists()) {
+          return _json({'error': 'not found'}, 404);
+        }
+
+        // Sharing the whole drive is not a link, it is handing over the
+        // account, and it is too easy to do by accident from the root folder.
+        if (path.isEmpty || path == '.' || path == '/') {
+          return _json({'error': 'pick a file or folder to share'}, 400);
+        }
+
+        final days = (body['expiresInDays'] as num?)?.toInt();
+        final expiresAt = days == null || days <= 0
+            ? null
+            : DateTime.now().add(Duration(days: days)).millisecondsSinceEpoch;
+
+        final maxDownloads = (body['maxDownloads'] as num?)?.toInt();
+        final password = (body['password'] as String? ?? '').trim();
+
+        DerivedPassword? derived;
+        if (password.isNotEmpty) {
+          derived = await auth.derivePassword(password);
+        }
+
+        final share = shares.create(
+          path: path,
+          isDir: isDir,
+          expiresAt: expiresAt,
+          maxDownloads:
+              maxDownloads != null && maxDownloads > 0 ? maxDownloads : null,
+          passwordHash: derived?.hash,
+          passwordSalt: derived?.salt,
+          passwordIterations: derived?.iterations,
+        );
+
+        return _json({'share': share.toOwnerJson()});
+      });
+
+  Future<Response> _revokeShare(Request request) => _guard(() async {
+        final body = await _readJson(request);
+        final token = body['token'] as String? ?? '';
+        if (shares.find(token) == null) {
+          return _json({'error': 'no such link'}, 404);
+        }
+        // Removed rather than flagged: a revoked link the owner can still see
+        // in a list is clutter, and the token is of no further use to anyone.
+        shares.remove(token);
+        return _json({'ok': true});
+      });
+
+  /// What a share link says about itself before any password is answered.
+  Future<Response> _shareInfo(Request request, String token) =>
+      _guard(() async {
+        final share = shares.find(token);
+        // Same answer for a token that never existed and one that is dead.
+        // Someone holding a link has no business learning which.
+        if (share == null || !share.live) {
+          return _json({'error': 'This link is no longer available.'}, 404);
+        }
+        return _json(share.toPublicJson());
+      });
+
+  Future<Response> _unlockShare(Request request, String token) =>
+      _guard(() async {
+        final share = shares.find(token);
+        if (share == null || !share.live) {
+          return _json({'error': 'This link is no longer available.'}, 404);
+        }
+        if (!share.hasPassword) return _json({'ok': true});
+
+        final body = await _readJson(request);
+        final ok = await auth.matchesPassword(
+          password: body['password'] as String? ?? '',
+          hash: share.passwordHash!,
+          salt: share.passwordSalt!,
+          storedIterations: share.passwordIterations!,
+        );
+        if (!ok) return _json({'error': 'Wrong password.'}, 403);
+
+        // Scoped to this link's own path, so the cookie cannot be replayed
+        // against another share or against the owner's API.
+        return _json({'ok': true}).change(headers: {
+          'Set-Cookie': '${_shareCookie(token)}=$token; Path=/; HttpOnly; '
+              'Secure; SameSite=Strict; Max-Age=43200',
+        });
+      });
+
+  /// Whether this request may read [share]'s contents.
+  bool _mayRead(Request request, Share share) {
+    if (!share.hasPassword) return true;
+    final cookies = _cookies(request);
+    return cookies[_shareCookie(share.token)] == share.token;
+  }
+
+  Future<Response> _shareList(Request request, String token) =>
+      _guard(() async {
+        final share = shares.find(token);
+        if (share == null || !share.live) {
+          return _json({'error': 'This link is no longer available.'}, 404);
+        }
+        if (!_mayRead(request, share)) {
+          return _json({'error': 'password required'}, 401);
+        }
+        if (!share.isDir) return _json({'error': 'not a folder'}, 400);
+
+        final within = request.url.queryParameters['path'] ?? '';
+        final target = _withinShare(share, within);
+        if (target == null) return _json({'error': 'bad path'}, 400);
+
+        return _json({
+          'path': within,
+          'entries': await files.list(target),
+        });
+      });
+
+  Future<Response> _shareDownload(Request request, String token) =>
+      _guard(() async {
+        final share = shares.find(token);
+        if (share == null || !share.live) {
+          return _json({'error': 'This link is no longer available.'}, 404);
+        }
+        if (!_mayRead(request, share)) {
+          return _json({'error': 'password required'}, 401);
+        }
+
+        final within = request.url.queryParameters['path'] ?? '';
+        final target = share.isDir ? _withinShare(share, within) : share.path;
+        if (target == null) return _json({'error': 'bad path'}, 400);
+
+        // Only whole retrievals count, or a video seeking through a file
+        // would eat a download cap in a few seconds.
+        if (request.headers['range'] == null) shares.countDownload(token);
+
+        return _sendFile(request, target);
+      });
+
+  /// Resolves a path a visitor asked for against what the share actually
+  /// covers, refusing anything that climbs out of it.
+  ///
+  /// The share's own path is the root here, so the containment check that
+  /// protects the drive from the owner's API protects one shared folder from
+  /// the rest of the drive in exactly the same way.
+  String? _withinShare(Share share, String requested) {
+    if (requested.isEmpty) return share.path;
+
+    final shareRoot = resolveDir(files.root, share.path);
+    if (shareRoot == null) return null;
+
+    final resolved = resolveFile(Directory(shareRoot.path), requested);
+    if (resolved == null) return null;
+
+    return p.relative(resolved.path, from: files.root.absolute.path);
+  }
+
+  Future<Response> _serveSharePage(Request request, String token) async {
+    final file = File(p.join(webRoot.path, 'share.html'));
+    if (!await file.exists()) return Response.notFound('UI not installed');
+    return Response.ok(
+      file.openRead(),
+      headers: {
+        'Content-Type': 'text/html',
+        'Content-Length': '${await file.length()}',
+      },
+    );
+  }
 
   Future<Response> _serveWebUi(Request request) async {
     final requested = request.url.path.isEmpty ? 'index.html' : request.url.path;

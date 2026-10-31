@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>PocketShare</title>
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
 
@@ -36,6 +36,7 @@
     <div class="bar">
       <strong class="brand">PocketShare</strong>
       <input id="search" type="search" placeholder="Search files" aria-label="Search files">
+      <button id="btn-shared" class="ghost" title="Shared links">Shared</button>
       <button id="btn-trash" class="ghost" title="Trash">Trash</button>
       <button id="btn-logout" class="ghost" title="Sign out">Sign out</button>
     </div>
@@ -72,6 +73,45 @@
   </main>
 </div>
 
+<dialog id="share" aria-label="Share">
+  <form method="dialog" class="share-form">
+    <div class="preview-bar">
+      <strong>Share <span id="share-target"></span></strong>
+      <span class="spacer"></span>
+      <button value="cancel" class="ghost" aria-label="Close">Close</button>
+    </div>
+
+    <div id="share-setup" class="share-pad">
+      <p class="muted">Anyone with the link can open it, without signing in.</p>
+
+      <label for="share-expiry">Link stops working</label>
+      <select id="share-expiry">
+        <option value="7" selected>After 7 days</option>
+        <option value="1">After 1 day</option>
+        <option value="30">After 30 days</option>
+        <option value="0">Never</option>
+      </select>
+
+      <label for="share-password">Password (optional)</label>
+      <input id="share-password" type="text" autocomplete="off"
+             placeholder="Leave blank for no password">
+
+      <label for="share-cap">Download limit (optional)</label>
+      <input id="share-cap" type="number" min="1" step="1" placeholder="No limit">
+
+      <button type="button" id="share-create" class="primary">Create link</button>
+      <p class="error" id="share-error" role="alert"></p>
+    </div>
+
+    <div id="share-done" class="share-pad" hidden>
+      <label for="share-url">Anyone with this link</label>
+      <input id="share-url" readonly>
+      <button type="button" id="share-copy" class="primary">Copy link</button>
+      <p class="muted" id="share-summary"></p>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="info" aria-label="File details">
   <div class="preview-bar">
     <strong>Details</strong>
@@ -92,6 +132,6 @@
 </dialog>
 
 <div id="drop-hint">Drop to upload</div>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

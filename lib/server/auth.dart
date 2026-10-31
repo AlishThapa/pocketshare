@@ -84,6 +84,44 @@ class Auth {
     return token;
   }
 
+  /// Derives password material for something that is not the account login —
+  /// today, a share link's optional password.
+  ///
+  /// Same KDF, same cost, same off-thread isolate. A share password guards a
+  /// link that is already public knowledge to whoever holds it, so it tends
+  /// to be short and memorable; that is exactly the case where the iteration
+  /// count has to carry the weight.
+  Future<DerivedPassword> derivePassword(String password) async {
+    final salt = _randomBytes(_saltBytes);
+    final hash = await _deriveOffThread(
+      password: utf8.encode(password),
+      salt: salt,
+      iterations: iterations,
+      keyLength: _keyBytes,
+    );
+    return DerivedPassword(
+      hash: base64.encode(hash),
+      salt: base64.encode(salt),
+      iterations: iterations,
+    );
+  }
+
+  /// Constant-time check of a password against stored material.
+  Future<bool> matchesPassword({
+    required String password,
+    required String hash,
+    required String salt,
+    required int storedIterations,
+  }) async {
+    final candidate = await _deriveOffThread(
+      password: utf8.encode(password),
+      salt: base64.decode(salt),
+      iterations: storedIterations,
+      keyLength: _keyBytes,
+    );
+    return _constantTimeEquals(candidate, base64.decode(hash));
+  }
+
   bool validate(String token) => _store.touchSession(_hashToken(token));
 
   void logout(String token) => _store.dropSession(_hashToken(token));
@@ -162,4 +200,18 @@ class Auth {
         (value >> 8) & 0xff,
         value & 0xff,
       ];
+}
+
+/// Password material ready to store. Carries its own iteration count so a
+/// future increase does not invalidate what is already saved.
+class DerivedPassword {
+  const DerivedPassword({
+    required this.hash,
+    required this.salt,
+    required this.iterations,
+  });
+
+  final String hash;
+  final String salt;
+  final int iterations;
 }
